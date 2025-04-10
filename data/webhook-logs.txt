@@ -1,0 +1,10 @@
+[2025-04-09T10:49:21.081Z] [SUPABASE] ERROR: SUPABASE_URL environment variable is not set
+[2025-04-09T10:49:21.082Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-09T10:49:21.294Z] [SUPABASE] ERROR: SUPABASE_URL environment variable is not set
+[2025-04-09T10:49:21.295Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-10T03:51:13.222Z] [SUPABASE] ERROR: SUPABASE_URL environment variable is not set
+[2025-04-10T03:51:13.223Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-10T03:52:47.975Z] [SUPABASE] ERROR: SUPABASE_URL environment variable is not set
+[2025-04-10T03:52:47.976Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-10T03:53:28.261Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-10T03:54:01.619Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
