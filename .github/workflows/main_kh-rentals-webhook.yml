@@ -1,12 +1,12 @@
 # Docs for the Azure Web Apps Deploy action: https://github.com/Azure/webapps-deploy
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 
-name: Build and deploy Node.js app to Azure Web App - kh-reantals-webhook
+name: Build and deploy Node.js app to Azure Web App - kh-rentals-webhook
 
 on:
   push:
     branches:
-      - webhook-server
+      - main
   workflow_dispatch:
 
 jobs:
@@ -23,9 +23,8 @@ jobs:
         with:
           node-version: '22.x'
 
-      - name: Install Webhook Server Dependencies
+      - name: Install dependencies
         run: |
-          cd webhook-server
           npm install
 
       - name: Create .env file
@@ -37,9 +36,7 @@ jobs:
           echo "EVIA_SIGN_WEBHOOK_URL=${{ secrets.EVIA_SIGN_WEBHOOK_URL }}" >> .env
 
       - name: Zip artifact for deployment
-        run: |
-          cd webhook-server
-          zip -r ../release.zip .
+        run: zip -r release.zip ./*
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -77,6 +74,7 @@ jobs:
         id: deploy-to-webapp
         uses: azure/webapps-deploy@v3
         with:
-          app-name: 'kh-reantals-webhook'
+          app-name: 'kh-rentals-webhook'
           slot-name: 'Production'
+          publish-profile: ${{ secrets.AZUREAPPSERVICE_PUBLISHPROFILE }}
           package: . 
