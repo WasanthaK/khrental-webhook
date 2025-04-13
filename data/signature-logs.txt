@@ -1,0 +1,26 @@
+[2025-04-13T22:55:20.194Z] Processing event 1 (SignRequestReceived) for request test-request-id
+[2025-04-13T22:55:20.195Z] Looking for agreement with RequestId: test-request-id
+[2025-04-13T22:55:21.042Z] Error finding agreement with exact match: invalid input syntax for type uuid: "test-request-id"
+[2025-04-13T22:55:21.043Z] No exact match found, trying signature_request_id
+[2025-04-13T22:55:21.236Z] No matches with exact fields, trying case-insensitive search
+[2025-04-13T22:55:21.444Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-13T22:55:21.445Z] Agreement not found: No matching agreement found
+[2025-04-13T22:58:24.221Z] Processing event 1 (SignRequestReceived) for request test-request-id
+[2025-04-13T22:58:24.221Z] Looking for agreement with RequestId: test-request-id
+[2025-04-13T22:58:24.392Z] Error finding agreement with exact match: invalid input syntax for type uuid: "test-request-id"
+[2025-04-13T22:58:24.392Z] No exact match found, trying signature_request_id
+[2025-04-13T22:58:24.491Z] No matches with exact fields, trying case-insensitive search
+[2025-04-13T22:58:24.585Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-13T22:58:24.587Z] Agreement not found: No matching agreement found
+[2025-04-13T23:01:49.243Z] Processing event 1 (SignRequestReceived) for request 12345678-1234-1234-1234-123456789012
+[2025-04-13T23:01:49.243Z] Looking for agreement with RequestId: 12345678-1234-1234-1234-123456789012
+[2025-04-13T23:01:49.825Z] No exact match found, trying signature_request_id
+[2025-04-13T23:01:49.946Z] No matches with exact fields, trying case-insensitive search
+[2025-04-13T23:01:50.051Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-13T23:01:50.052Z] Agreement not found: No matching agreement found
+[2025-04-13T23:26:53.139Z] Processing event 1 (SignRequestReceived) for request a2db276e-a043-431f-ba38-2873897da3da
+[2025-04-13T23:26:53.140Z] Looking for agreement with RequestId: a2db276e-a043-431f-ba38-2873897da3da
+[2025-04-13T23:26:53.415Z] No exact match found, trying signature_request_id
+[2025-04-13T23:26:53.539Z] No matches with exact fields, trying case-insensitive search
+[2025-04-13T23:26:53.728Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-13T23:26:53.729Z] Agreement not found: No matching agreement found

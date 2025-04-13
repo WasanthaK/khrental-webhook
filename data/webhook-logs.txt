@@ -8,3 +8,11 @@
 [2025-04-10T03:52:47.976Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
 [2025-04-10T03:53:28.261Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
 [2025-04-10T03:54:01.619Z] [SUPABASE] ERROR: SUPABASE_SERVICE_KEY environment variable is not set
+[2025-04-13T23:25:17.278Z] Uncaught Exception: Error: listen EADDRINUSE: address already in use :::3030
+    at Server.setupListenHandle [as _listen2] (node:net:1907:16)
+    at listenInCluster (node:net:1964:12)
+    at Server.listen (node:net:2066:7)
+    at file:///C:/Users/User/webhook-server/server.js:769:8
+    at ModuleJob.run (node:internal/modules/esm/module_job:268:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:543:26)
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:116:5)
