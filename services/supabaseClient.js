@@ -1,5 +1,5 @@
 // supabaseClient.js for webhook server
-// Adapted from src/services/supabaseClient.js
+// Provides database connectivity and operations for webhook processing
 
 import { createClient } from '@supabase/supabase-js';
 import fetch from 'node-fetch';
@@ -12,6 +12,10 @@ import crypto from 'crypto';
 // Load environment variables
 dotenv.config();
 
+// Constants
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HTTP_TIMEOUT = 15000; // 15 seconds
+
 // Set up logging
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -23,14 +27,30 @@ if (!fs.existsSync(LOGS_DIR)) {
   fs.mkdirSync(LOGS_DIR, { recursive: true });
 }
 
-// Helper function to log
-const log = (message) => {
+// Get environment variables
+const { SUPABASE_URL, SUPABASE_SERVICE_KEY } = process.env;
+
+/**
+ * Write a log message to file and console
+ * @param {string} message - Message to log
+ * @param {string} level - Log level (info, warn, error)
+ */
+const log = (message, level = 'info') => {
   try {
-    // Only log critical errors (messages containing "ERROR:" or "Exception" or "failed")
-    if (message.includes('ERROR:') || message.includes('Exception') || message.includes('failed')) {
-      const timestamp = new Date().toISOString();
-      const logEntry = `[${timestamp}] [SUPABASE] ${message}\n`;
-      fs.appendFileSync(LOGS_PATH, logEntry);
+    // Format message with timestamp and level
+    const timestamp = new Date().toISOString();
+    const prefix = level === 'error' ? '[ERROR]' : level === 'warn' ? '[WARN]' : '[INFO]';
+    const logMessage = `[${timestamp}] ${prefix} ${message}`;
+    
+    // Write to file for errors and warnings
+    if (level === 'error' || level === 'warn') {
+      fs.appendFileSync(LOGS_PATH, `${logMessage}\n`);
+    }
+    
+    // Output to console
+    if (level === 'error') {
+      console.error(`[SUPABASE] ${message}`);
+    } else {
       console.log(`[SUPABASE] ${message}`);
     }
   } catch (err) {
@@ -38,44 +58,38 @@ const log = (message) => {
   }
 };
 
-// Check for required environment variables
-const { SUPABASE_URL, SUPABASE_SERVICE_KEY } = process.env;
-
+// Validate environment variables
 if (!SUPABASE_URL) {
-  log('ERROR: SUPABASE_URL environment variable is not set');
+  log('Missing SUPABASE_URL environment variable', 'error');
 }
 
 if (!SUPABASE_SERVICE_KEY) {
-  log('ERROR: SUPABASE_SERVICE_KEY environment variable is not set');
+  log('Missing SUPABASE_SERVICE_KEY environment variable', 'error');
 }
 
-// Custom fetch with timeout
+/**
+ * Custom fetch with timeout handling
+ * @param {string} url - URL to fetch
+ * @param {Object} options - Fetch options
+ */
 const customFetch = (url, options = {}) => {
-  // Set a 15-second timeout
-  const timeout = 15000;
-  
-  // Create an abort controller to handle timeouts
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
+  const timeoutId = setTimeout(() => controller.abort(), HTTP_TIMEOUT);
   
-  // Add signal to options
-  const fetchOptions = {
+  return fetch(url, {
     ...options,
     signal: controller.signal
-  };
-  
-  return fetch(url, fetchOptions)
-    .finally(() => clearTimeout(timeoutId));
+  }).finally(() => clearTimeout(timeoutId));
 };
 
-// Create and export Supabase client
+// Initialize Supabase client
 let supabase = null;
 
 if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
   try {
-    log(`Initializing Supabase client with URL: ${SUPABASE_URL}`);
+    log('Initializing Supabase client');
     
-    // Create the client with cache disabled
+    // Create client with optimized settings
     supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
       auth: {
         autoRefreshToken: false,
@@ -87,64 +101,86 @@ if (SUPABASE_URL && SUPABASE_SERVICE_KEY) {
       db: {
         schema: 'public',
       },
-      // Disable features that might cause schema cache issues
       realtime: {
-        enabled: false,
+        enabled: false, // Disable realtime to avoid schema cache issues
       }
     });
     
-    log('Supabase client initialized');
-    
-    // Clear the schema cache by forcing a select query first - reduce verbosity
+    // Prime the schema cache to avoid issues
     setTimeout(async () => {
       try {
-        const { data, error } = await supabase.from('webhook_events').select('*').limit(1);
+        const { error } = await supabase.from('webhook_events').select('id').limit(1);
         if (error) {
-          log(`Schema cache priming error: ${error.message}`);
+          log(`Schema cache priming error: ${error.message}`, 'warn');
+        } else {
+          log('Schema cache primed successfully', 'info');
         }
       } catch (e) {
-        log(`Error priming schema cache: ${e.message}`);
+        log(`Error priming schema cache: ${e.message}`, 'error');
       }
     }, 1000);
+    
+    log('Supabase client initialized successfully');
   } catch (error) {
-    log(`Error initializing Supabase client: ${error.message}`);
-    console.error('Error initializing Supabase client:', error);
+    log(`Error initializing Supabase client: ${error.message}`, 'error');
   }
 } else {
-  log('Supabase client not initialized due to missing environment variables');
+  log('Supabase client not initialized due to missing environment variables', 'error');
 }
 
 /**
- * Test the Supabase connection
- * @returns {Promise<Object>} - Connection test result
+ * Test database connection
+ * @returns {Promise<Object>} Connection test result
  */
 const testConnection = async () => {
-  // Reduce verbosity - only log the starting and ending of the test
+  log('Testing Supabase connection...', 'info');
+  
   try {
-    // First test with a direct HTTP request
+    // First test direct HTTP connection
     const response = await fetch(`${SUPABASE_URL}/rest/v1/?apikey=${SUPABASE_SERVICE_KEY}`);
+    
     if (!response.ok) {
-      console.error(`[SUPABASE] Direct HTTP test failed with status ${response.status}`);
+      log(`Direct HTTP test failed with status ${response.status}`, 'error');
       return { success: false, error: `HTTP test failed with status ${response.status}` };
     }
-
-    // Then test with the Supabase client
+    
+    // Then test the Supabase client
     const { data, error } = await supabase
       .from('webhook_events')
       .select('id')
       .limit(5);
-
+      
     if (error) {
-      console.error(`[SUPABASE] Supabase client test failed: ${error.message}`);
+      log(`Supabase client test failed: ${error.message}`, 'error');
       return { success: false, error: error.message };
     }
-
-    console.log(`✅ Supabase connection test successful`);
+    
+    log('Supabase connection test successful', 'info');
     return { success: true, count: data?.length || 0 };
   } catch (error) {
-    console.error(`[SUPABASE] Connection test error: ${error.message}`);
+    log(`Connection test error: ${error.message}`, 'error');
     return { success: false, error: error.message };
   }
+};
+
+/**
+ * Validates and normalizes a UUID string
+ * @param {string} uuid - UUID to validate
+ * @returns {Object} The validation result
+ */
+const validateAndNormalizeUUID = (uuid) => {
+  if (!uuid) {
+    return { valid: false, value: null };
+  }
+  
+  // Check if it's a valid UUID format
+  if (UUID_REGEX.test(uuid)) {
+    // Normalize to lowercase without spaces
+    return { valid: true, value: uuid.trim().toLowerCase() };
+  }
+  
+  // Not valid, generate a new one
+  return { valid: false, value: crypto.randomUUID() };
 };
 
 /**
@@ -156,69 +192,40 @@ async function insertWebhookEvent(eventData) {
   try {
     // Validate input
     if (!eventData) {
-      console.error('[supabaseClient] Error: No event data provided');
+      log('No event data provided for insertion', 'error');
       return { success: false, error: 'No event data provided' };
     }
-
-    // Log the incoming data
-    console.log('[supabaseClient] Inserting webhook event:', 
-                `EventId=${eventData.EventId}, RequestId=${eventData.RequestId}`);
     
-    // Handle the RequestId appropriately
-    let validRequestId = eventData.RequestId;
+    log(`Processing webhook: EventId=${eventData.EventId}, RequestId=${eventData.RequestId}`, 'info');
     
-    // Validate RequestId as UUID format
-    const validateUUID = (uuid) => {
-      if (!uuid) return false;
-      // This regex checks for the UUID v4 format
-      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-      return uuidRegex.test(uuid);
-    };
+    // Validate and normalize the RequestId as UUID
+    const { valid, value: validRequestId } = validateAndNormalizeUUID(eventData.RequestId);
     
-    // If RequestId is not a valid UUID format, generate a new one
-    if (!validateUUID(validRequestId)) {
-      console.log(`[supabaseClient] RequestId not in valid UUID format: ${validRequestId}`);
-      const originalId = validRequestId;
-      // Generate a completely new UUID
-      validRequestId = crypto.randomUUID();
-      console.log(`[supabaseClient] Using generated UUID: ${originalId} → ${validRequestId}`);
+    if (!valid) {
+      log(`Converting invalid RequestId '${eventData.RequestId}' to UUID: ${validRequestId}`, 'warn');
     } else {
-      // Normalize UUID format (lowercase, no spaces)
-      validRequestId = validRequestId.trim().toLowerCase();
-      console.log(`[supabaseClient] Using valid UUID: ${validRequestId}`);
+      log(`Using valid UUID: ${validRequestId}`, 'info');
     }
-
-    // Prepare the record data with careful type handling for UUID fields
+    
+    // Create the database record
     const record = {
       event_type: eventData.EventDescription || 'unknown',
-      // Store as string explicitly to avoid UUID conversion issues
-      eviasignreference: validRequestId,  // Use eviasignreference instead of request_id
+      eviasignreference: validRequestId,
       user_name: eventData.UserName || null,
       user_email: eventData.Email || null,
       subject: eventData.Subject || null,
       event_id: eventData.EventId !== undefined ? Number(eventData.EventId) : null,
       event_time: eventData.EventTime || new Date().toISOString(),
-      raw_data: eventData,
+      raw_data: typeof eventData === 'object' ? JSON.stringify(eventData) : eventData,
       createdat: new Date().toISOString(),
       updatedat: new Date().toISOString(),
       processed: false
     };
-
-    console.log(`[supabaseClient] Inserting record for event_id: ${record.event_id}, eviasignreference: ${record.eviasignreference}`);
-
-    // Try direct HTTP approach which gives us more control over the query
+    
+    log(`Attempting to store event in database`, 'info');
+    
+    // Try direct HTTP method first
     try {
-      console.log('[supabaseClient] Attempting direct HTTP API insert for webhook_events');
-      
-      // Ensure raw_data is properly stringified for JSON
-      const recordForPost = {
-        ...record,
-        raw_data: typeof record.raw_data === 'object' ? JSON.stringify(record.raw_data) : record.raw_data
-      };
-      
-      // Log the exact data being sent to the database
-      console.log('[supabaseClient] Sending data to database:', JSON.stringify(recordForPost));
-      
       const response = await fetch(
         `${SUPABASE_URL}/rest/v1/webhook_events`,
         {
@@ -229,123 +236,111 @@ async function insertWebhookEvent(eventData) {
             'Content-Type': 'application/json',
             'Prefer': 'return=representation'
           },
-          body: JSON.stringify(recordForPost)
+          body: JSON.stringify(record)
         }
       );
       
-      // Debug response status
-      console.log(`[supabaseClient] HTTP response status: ${response.status}`);
-      
       if (response.ok) {
         const data = await response.json();
-        console.log('[supabaseClient] Direct HTTP insert successful, response data:', JSON.stringify(data));
+        log(`Event stored successfully with ID: ${data[0]?.id}`, 'info');
         return { success: true, data: data[0] };
       } else {
         const errorText = await response.text();
-        console.error(`[supabaseClient] Direct HTTP insert failed: ${response.status} - ${errorText}`);
+        log(`Direct HTTP insert failed: ${errorText}`, 'error');
         
-        // If direct insert fails, try standard supabase client as fallback
-        console.log('[supabaseClient] Trying Supabase client insert as fallback');
+        // Try Supabase client as fallback
+        log('Attempting Supabase client insert as fallback', 'info');
         
-        // Log the data being sent to Supabase client
-        console.log('[supabaseClient] Sending data via Supabase client:', JSON.stringify(record));
-        
-        const { data: insertData, error: insertError } = await supabase
+        const { data, error } = await supabase
           .from('webhook_events')
           .insert([record])
           .select();
           
-        if (insertError) {
-          console.error('[supabaseClient] Supabase client insert failed:', insertError);
+        if (error) {
+          log(`Supabase client insert failed: ${error.message}`, 'error');
           
-          // Create a virtual record so processing can continue
+          // Return virtual record to allow processing to continue
           return { 
-            success: true,
+            success: true, 
             data: { 
-              id: `local-${Date.now()}`, 
+              id: `virtual-${Date.now()}`,
               eviasignreference: validRequestId,
               virtual: true 
             },
-            warning: 'Created virtual record due to database issues'
+            warning: 'Using virtual record due to database issues'
           };
         }
         
-        console.log('[supabaseClient] Webhook event inserted successfully via client, ID:', insertData?.[0]?.id);
-        return { success: true, data: insertData?.[0] };
+        log(`Event stored via client with ID: ${data[0]?.id}`, 'info');
+        return { success: true, data: data[0] };
       }
     } catch (error) {
-      console.error('[supabaseClient] All insert attempts failed:', error);
+      log(`Exception during database insert: ${error.message}`, 'error');
       
-      // Return virtual ID so processing can continue
+      // Return virtual record
       return { 
-        success: true,
+        success: true, 
         data: { 
           id: `error-${Date.now()}`,
           eviasignreference: validRequestId,
           virtual: true 
         },
-        warning: 'Created virtual record due to insert error'
+        warning: 'Using virtual record due to error'
       };
     }
   } catch (error) {
-    console.error('[supabaseClient] Exception in insertWebhookEvent:', error);
-    // Even if we can't store in database, allow processing to continue with a virtual record
+    log(`Unexpected error in insertWebhookEvent: ${error.message}`, 'error');
+    
+    // Return a virtual record to allow processing to continue
     return { 
       success: true, 
       data: { 
         id: `exception-${Date.now()}`,
         virtual: true 
       },
-      warning: 'Created virtual record due to exception',
-      originalError: error.message
+      warning: 'Using virtual record due to exception'
     };
   }
 }
 
 /**
- * Helper function to get event type description from ID
- * @param {number} eventId - The event ID
- * @returns {string} - The event type description
+ * Map event ID to event type description
+ * @param {number} eventId - Event ID
+ * @returns {string} Event type description
  */
 function getEventTypeFromId(eventId) {
-  switch(eventId) {
-    case 1:
-      return 'SignRequestReceived';
-    case 2:
-      return 'SignatoryCompleted';
-    case 3:
-      return 'RequestCompleted';
-    default:
-      return 'Unknown';
-  }
+  const eventTypes = {
+    1: 'SignRequestReceived',
+    2: 'SignatoryCompleted',
+    3: 'RequestCompleted'
+  };
+  
+  return eventTypes[eventId] || 'Unknown';
 }
 
 /**
  * Mark a webhook event as processed
- * @param {string} eventId - The ID of the webhook event
- * @param {Object} processingResult - Result of processing the webhook
- * @returns {Promise<Object>} The result of the operation
+ * @param {string} eventId - Event ID to mark as processed
+ * @param {Object} processingResult - Processing result data
+ * @returns {Promise<Object>} Operation result
  */
 async function markWebhookEventProcessed(eventId, processingResult) {
   try {
     if (!eventId) {
-      console.warn('[supabaseClient] Cannot mark event as processed: missing event ID');
+      log('Cannot mark event as processed: missing event ID', 'warn');
       return { success: false, warning: 'Missing event ID' };
     }
-
-    console.log(`[supabaseClient] Marking webhook event ${eventId} as processed`);
     
-    // Now that the schema is standardized, use a proper update with updatedat
+    log(`Marking webhook event ${eventId} as processed`, 'info');
+    
+    // Update data
+    const updateData = {
+      processed: true,
+      updatedat: new Date().toISOString()
+    };
+    
     try {
-      console.log('[supabaseClient] Using standard update with processed flag and updatedat');
-      
-      const updateData = {
-        processed: true,
-        updatedat: new Date().toISOString()
-      };
-      
-      console.log(`[supabaseClient] Update data: ${JSON.stringify(updateData)}`);
-      
+      // Try direct HTTP update
       const response = await fetch(
         `${SUPABASE_URL}/rest/v1/webhook_events?id=eq.${encodeURIComponent(eventId)}`,
         {
@@ -361,131 +356,76 @@ async function markWebhookEventProcessed(eventId, processingResult) {
       );
       
       if (response.ok) {
-        console.log('[supabaseClient] Direct HTTP PATCH succeeded');
+        log(`Event ${eventId} marked as processed successfully`, 'info');
         return { success: true };
       } else {
-        // Log the error but don't fail the overall process
         const errorText = await response.text();
-        console.error(`[supabaseClient] Direct HTTP PATCH failed: ${response.status} - ${errorText}`);
+        log(`HTTP update failed: ${errorText}`, 'error');
         
         // Try Supabase client as fallback
-        console.log('[supabaseClient] Trying Supabase client update as fallback');
+        log('Trying Supabase client update as fallback', 'info');
         
-        const { error: updateError } = await supabase
+        const { error } = await supabase
           .from('webhook_events')
           .update(updateData)
           .eq('id', eventId);
           
-        if (!updateError) {
-          console.log('[supabaseClient] Client update succeeded');
+        if (!error) {
+          log(`Event ${eventId} marked as processed via client`, 'info');
           return { success: true };
         } else {
-          console.error('[supabaseClient] Client update failed:', updateError.message);
-          console.log('[supabaseClient] Continuing despite update failure');
+          log(`Client update failed: ${error.message}`, 'error');
           
-          // Return success anyway to prevent webhook processing from stalling
-          return { 
+          // Return success with warning to allow processing to continue
+          return {
             success: true,
-            warning: 'Could not mark as processed in database, but webhook was processed'
+            warning: 'Could not mark event as processed in database'
           };
         }
       }
     } catch (error) {
-      // Log the error but don't fail the overall process
-      console.error('[supabaseClient] Exception in update:', error.message);
-      console.log('[supabaseClient] Continuing despite update failure');
+      log(`Exception marking event as processed: ${error.message}`, 'error');
       
-      // Return success anyway to prevent webhook processing from stalling
-      return { 
+      // Continue webhook processing despite the error
+      return {
         success: true,
-        warning: 'Exception updating database, but webhook was processed'
+        warning: 'Exception updating database status'
       };
     }
   } catch (error) {
-    console.error('[supabaseClient] Exception in markWebhookEventProcessed:', error);
+    log(`Unexpected error in markWebhookEventProcessed: ${error.message}`, 'error');
     
-    // Return success anyway to prevent webhook processing from stalling
-    return { 
+    // Continue webhook processing despite the error
+    return {
       success: true,
-      warning: 'Exception in update function, but webhook was processed' 
+      warning: 'Unexpected error updating status'
     };
   }
 }
 
 /**
- * Test insert a sample webhook event to verify database permissions
- * This is only run at startup to verify everything is working
+ * Log webhook delivery for monitoring
+ * @param {Object} webhookData - Webhook data
+ * @param {string} source - Source of the webhook
+ * @returns {Promise<Object>} Operation result
  */
-const testInsertWebhookEvent = async () => {
-  if (!supabase) {
-    log('Cannot test insert: Supabase client not initialized');
-    return { success: false, error: 'Supabase client not initialized' };
-  }
-
+async function logWebhookDelivery(webhookData, source = 'direct') {
   try {
-    log('Testing webhook event insertion...');
-    
-    const now = new Date().toISOString();
-    
-    // Get the table structure first to see what columns exist
-    const { data: tableInfo, error: tableError } = await supabase
-      .from('webhook_events')
-      .select('*')
-      .limit(1);
-    
-    if (tableError) {
-      log(`Error fetching table structure: ${tableError.message}`);
-      
-      // Create a simple test event with minimal fields - always include event_type
-      const testEvent = {
-        event_type: 'test', // Always include as it's required
-        eviasignreference: `test_${Date.now()}`,
-        processed: false
-      };
-      
-      log('Using minimal fields for test insert');
-      
-      const { data, error } = await supabase
-        .from('webhook_events')
-        .insert(testEvent)
-        .select();
-      
-      if (error) {
-        log(`Error inserting test event: ${error.message}`);
-        return { success: false, error: error.message };
-      }
-      
-      log('Test event inserted successfully');
-      return { success: true, count: 1 };
-    } else {
-      log('Table structure fetched successfully');
-      return { success: true, count: tableInfo.length };
-    }
+    log(`Received webhook from ${source}: EventId=${webhookData.EventId}, Type=${webhookData.EventDescription}`, 'info');
+    return { success: true };
   } catch (error) {
-    log(`Error testing webhook event insertion: ${error.message}`);
+    log(`Error logging webhook delivery: ${error.message}`, 'error');
     return { success: false, error: error.message };
   }
+}
+
+// Export functions and the Supabase client
+export {
+  testConnection,
+  insertWebhookEvent,
+  markWebhookEventProcessed,
+  getEventTypeFromId,
+  logWebhookDelivery
 };
 
-/**
- * Log webhook delivery status for monitoring
- * @param {Object} webhookData - The webhook data received
- * @param {string} source - Where the webhook was received from
- */
-const logWebhookDelivery = async (webhookData, source = 'direct') => {
-  try {
-    console.log(`[WEBHOOK TRACKING] Received webhook from ${source}`);
-    console.log(`[WEBHOOK TRACKING] Request ID: ${webhookData.RequestId}`);
-    console.log(`[WEBHOOK TRACKING] Event Type: ${webhookData.EventDescription} (ID: ${webhookData.EventId})`);
-    
-    // Log to console only, don't attempt DB insertion since we're already having issues
-    return { success: true };
-  } catch (err) {
-    console.error(`[WEBHOOK TRACKING] Error: ${err.message}`);
-    return { success: false, error: err.message };
-  }
-};
-
-// Export functions and the supabase client
-export { markWebhookEventProcessed, logWebhookDelivery, testConnection, insertWebhookEvent, testInsertWebhookEvent };
 export default supabase;

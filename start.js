@@ -1,108 +1,162 @@
 // Helper script to properly start the webhook server
-const { spawn } = require('child_process');
-const http = require('http');
-const path = require('path');
-const fs = require('fs');
+// with environment checks and database tests
 
-// Logger
-function log(message) {
-  const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${message}`);
-}
+import { spawn } from 'child_process';
+import dotenv from 'dotenv';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { testConnection } from './services/supabaseClient.js';
+
+// Load environment variables
+dotenv.config();
+
+// Get directory paths
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_DIR = path.join(__dirname, 'data');
 
 // Ensure data directory exists
-const dataDir = path.join(__dirname, 'data');
-if (!fs.existsSync(dataDir)) {
-  log(`Creating data directory: ${dataDir}`);
-  fs.mkdirSync(dataDir, { recursive: true });
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-// Check if port 3030 is already in use
-function checkPort(port) {
-  return new Promise((resolve) => {
-    const server = http.createServer();
-    
-    server.once('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        log(`❌ Port ${port} is already in use. Another process may be running.`);
-        resolve(false);
-      }
-    });
-    
-    server.once('listening', () => {
-      server.close();
-      resolve(true);
-    });
-    
-    server.listen(port);
-  });
+// Log file setup
+const LOG_FILE = path.join(DATA_DIR, 'webhook-server.log');
+const logStream = fs.createWriteStream(LOG_FILE, { flags: 'a' });
+
+/**
+ * Log a message to console and file
+ */
+function log(message, type = 'info') {
+  const timestamp = new Date().toISOString();
+  const prefix = type === 'error' ? '[ERROR]' : type === 'warn' ? '[WARNING]' : '[INFO]';
+  const logMessage = `[${timestamp}] ${prefix} ${message}`;
+  
+  // Log to console
+  if (type === 'error') {
+    console.error(logMessage);
+  } else {
+    console.log(logMessage);
+  }
+  
+  // Log to file
+  logStream.write(logMessage + '\n');
 }
 
-async function startServer() {
+// Check for required environment variables
+const requiredEnvVars = [
+  'SUPABASE_URL',
+  'SUPABASE_SERVICE_KEY'
+];
+
+const missingEnvVars = requiredEnvVars.filter(varName => !process.env[varName]);
+
+if (missingEnvVars.length > 0) {
+  log(`Missing required environment variables: ${missingEnvVars.join(', ')}`, 'error');
+  log('Please check your .env file and restart the server', 'error');
+  process.exit(1);
+}
+
+// Run database connection test
+async function runDatabaseTest() {
+  log('Testing database connection...');
+  
   try {
-    log('Starting webhook server...');
+    const result = await testConnection();
     
-    // Check if port is available
-    const portAvailable = await checkPort(3030);
-    
-    if (!portAvailable) {
-      log('Attempting to kill any existing Node.js processes...');
-      
-      try {
-        if (process.platform === 'win32') {
-          const { execSync } = require('child_process');
-          execSync('taskkill /F /IM node.exe', { stdio: 'ignore' });
-          log('Killed existing Node.js processes');
-        } else {
-          log('Please manually stop any running Node.js processes and try again');
-          process.exit(1);
-        }
-      } catch (error) {
-        log('No existing Node.js processes found or unable to kill them');
-      }
-      
-      // Wait a moment for the port to be released
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    if (!result.success) {
+      log(`Database connection test failed: ${result.error}`, 'error');
+      return false;
     }
     
-    // Set environment to production
-    const env = { ...process.env, NODE_ENV: 'production' };
-    
-    // Start the server process
-    log('Launching server in production mode...');
-    const serverProcess = spawn('node', ['server.js'], {
-      env,
-      stdio: 'inherit',
-      cwd: __dirname
-    });
-    
-    serverProcess.on('error', (err) => {
-      log(`❌ Failed to start server: ${err.message}`);
-      process.exit(1);
-    });
-    
-    // The server is now running (stdio is inherited, so you'll see its output)
-    // No need to explicitly listen for stdout/stderr
-    
-    log('Server process started. Press Ctrl+C to stop.');
-    
-    // Handle process termination
-    process.on('SIGINT', () => {
-      log('Shutting down...');
-      serverProcess.kill();
-      process.exit(0);
-    });
-    
-    // Keep the process running
-    serverProcess.on('close', (code) => {
-      log(`Server process exited with code ${code}`);
-      process.exit(code);
-    });
-    
+    log('Database connection test successful');
+    return true;
   } catch (error) {
-    log(`❌ Error: ${error.message}`);
-    process.exit(1);
+    log(`Database test error: ${error.message}`, 'error');
+    return false;
   }
 }
 
-startServer(); 
+// Start the server
+function startServer() {
+  log('Starting webhook server...');
+  
+  const serverProcess = spawn('node', ['server.js'], {
+    stdio: 'inherit',
+    shell: true
+  });
+  
+  serverProcess.on('error', (error) => {
+    log(`Server startup error: ${error.message}`, 'error');
+  });
+  
+  serverProcess.on('exit', (code, signal) => {
+    if (code !== 0) {
+      log(`Server exited with code ${code} and signal ${signal}`, 'error');
+    } else {
+      log('Server stopped');
+    }
+  });
+  
+  // Handle termination signals
+  process.on('SIGINT', () => {
+    log('Received SIGINT. Shutting down gracefully...');
+    serverProcess.kill('SIGINT');
+  });
+  
+  process.on('SIGTERM', () => {
+    log('Received SIGTERM. Shutting down gracefully...');
+    serverProcess.kill('SIGTERM');
+  });
+  
+  log('Server started successfully');
+}
+
+// Main startup sequence
+async function startup() {
+  log('\n====== WEBHOOK SERVER STARTUP ======\n');
+  log(`Server starting in ${process.env.NODE_ENV || 'development'} mode`);
+  
+  // Test database connection before starting
+  const dbConnected = await runDatabaseTest();
+  
+  if (!dbConnected) {
+    log('WARNING: Database connection test failed. Server may not be able to store webhooks.', 'warn');
+    
+    // Ask for confirmation to continue
+    if (process.env.FORCE_START !== 'true') {
+      console.log('\nDatabase connection failed. Start server anyway? (y/n)');
+      
+      // Use readline to get user input
+      const readline = await import('readline');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      
+      rl.question('> ', (answer) => {
+        rl.close();
+        
+        if (answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
+          startServer();
+        } else {
+          log('Server startup aborted by user');
+          process.exit(0);
+        }
+      });
+    } else {
+      log('FORCE_START is set to true. Starting server despite database issues...');
+      startServer();
+    }
+  } else {
+    // Database is connected, start the server
+    startServer();
+  }
+}
+
+// Start the server
+startup().catch(error => {
+  log(`Unhandled startup error: ${error.message}`, 'error');
+  process.exit(1);
+}); 
