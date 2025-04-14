@@ -121,7 +121,20 @@ function logToFile(message) {
     
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ${filteredMessage}\n`;
+    
+    // Write to standard log location
     fs.appendFileSync(LOGS_PATH, logEntry);
+    
+    // Check if we're in Azure environment and write to Azure logs
+    if (process.env.WEBSITE_SITE_NAME) {
+      try {
+        // Azure App Service log path
+        const azureLogPath = path.join('D:\\home\\LogFiles', 'webhook-logs.txt');
+        fs.appendFileSync(azureLogPath, logEntry);
+      } catch (azureErr) {
+        console.error('Error writing to Azure logs:', azureErr);
+      }
+    }
   } catch (err) {
     console.error('Error writing to log:', err);
   }
@@ -486,34 +499,240 @@ const handleEviaSignWebhook = async (req, res) => {
     await storeEventLocally(webhookData);
     console.log('Webhook stored locally successfully');
     
-    // Broadcast to dashboard (UI updates only)
-    console.log('About to broadcast webhook to dashboard UI');
-    logToFile('About to broadcast webhook to dashboard UI');
+    let storedEventId = null;
+    // IMPORTANT: Store in database FIRST (before broadcasting to dashboard)
+    // This allows database triggers to execute before anyone sees the data
     try {
-      broadcastWebhook(webhookData);
-      console.log('Successfully completed dashboard UI broadcast');
-      logToFile('Successfully completed dashboard UI broadcast');
-    } catch (broadcastError) {
-      console.error('Error broadcasting to dashboard:', broadcastError);
-      logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
-      // Continue processing even if broadcast fails
+      console.log('\n=== BEGINNING DATABASE STORAGE ===');
+      logToFile('=== BEGINNING DATABASE STORAGE ===');
+      console.log('Storing webhook event in Supabase');
+      
+      // Validate and normalize the RequestId as a UUID for potential foreign key linking
+      // This function checks if a string is a valid UUID
+      const isUUID = (str) => {
+        if (!str) {
+          return false;
+        }
+        const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+        return uuidPattern.test(str);
+      };
+      
+      // Format UUID properly for database foreign key matching
+      let eviasignReference = webhookData.RequestId || null;
+      
+      // Log the original value for debugging
+      console.log(`Original RequestId: ${eviasignReference}`);
+      
+      // Check if we have a valid UUID for the foreign key relationship
+      if (eviasignReference) {
+        // If it's already a valid UUID, use it as is
+        if (isUUID(eviasignReference)) {
+          console.log(`RequestId is a valid UUID: ${eviasignReference}`);
+        } else {
+          // Try to normalize common UUID formats (remove dashes, etc)
+          const normalizedUUID = eviasignReference.replace(/[^a-f0-9]/gi, '');
+          
+          // If normalized value is right length, try to format as UUID
+          if (normalizedUUID.length === 32) {
+            eviasignReference = 
+              normalizedUUID.substr(0, 8) + '-' + 
+              normalizedUUID.substr(8, 4) + '-' + 
+              normalizedUUID.substr(12, 4) + '-' + 
+              normalizedUUID.substr(16, 4) + '-' + 
+              normalizedUUID.substr(20, 12);
+            
+            console.log(`Reformatted non-standard UUID: ${eviasignReference}`);
+          } else {
+            // Warning if RequestId doesn't look like a UUID at all
+            console.warn(`RequestId doesn't appear to be a UUID, foreign key matching may fail: ${eviasignReference}`);
+            logToFile(`Warning: RequestId doesn't appear to be a UUID, agreement lookup may fail: ${eviasignReference}`);
+          }
+        }
+      } else {
+        console.warn('No RequestId provided in webhook data, will not be able to link to an agreement');
+        logToFile('Warning: No RequestId provided in webhook data, will not be able to link to an agreement');
+      }
+      
+      // Create a properly formatted record
+      const record = {
+        event_type: webhookData.EventDescription || 'unknown',
+        eviasignreference: eviasignReference, // Use the validated/formatted value
+        user_name: webhookData.UserName || null,
+        user_email: webhookData.Email || null,
+        subject: webhookData.Subject || null,
+        event_id: webhookData.EventId !== undefined ? Number(webhookData.EventId) : null,
+        event_time: webhookData.EventTime || new Date().toISOString(),
+        raw_data: JSON.stringify(webhookData),
+        createdat: new Date().toISOString(),
+        updatedat: new Date().toISOString(),
+        processed: false
+      };
+      
+      // Log the formatted record with special attention to the reference field
+      console.log('PREPARED RECORD:');
+      console.log(JSON.stringify(record, null, 2));
+      console.log(`eviasignreference formatted as: ${record.eviasignreference}`);
+      
+      // Try direct insert to trigger database functions - with retry mechanism
+      console.log('Inserting into database to trigger webhook event processing...');
+      
+      // Try with retry mechanism in case of transient errors
+      const maxRetries = 3;
+      let retryCount = 0;
+      let insertSuccessful = false;
+      
+      while (retryCount < maxRetries && !insertSuccessful) {
+        try {
+          if (retryCount > 0) {
+            console.log(`Retrying database insertion (attempt ${retryCount + 1} of ${maxRetries})...`);
+            logToFile(`Retrying database insertion (attempt ${retryCount + 1} of ${maxRetries})...`);
+            // Small delay before retry
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+          
+          const directResponse = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/webhook_events`,
+            {
+              method: 'POST',
+              headers: {
+                'apikey': process.env.SUPABASE_SERVICE_KEY,
+                'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation'
+              },
+              body: JSON.stringify(record)
+            }
+          );
+          
+          // Handle response
+          if (directResponse.ok) {
+            const data = await directResponse.json();
+            storedEventId = data[0]?.id;
+            console.log(`Webhook stored with ID: ${storedEventId}`);
+            logToFile(`Webhook stored in database with ID: ${storedEventId}`);
+            insertSuccessful = true;
+            
+            console.log('Checking if database triggers executed properly...');
+            
+            // Let the database triggers run for a moment before continuing
+            // This delay gives the database time to process triggers
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            
+            // Check if an agreement was associated - this helps verify trigger execution
+            if (eviasignReference) {
+              try {
+                const agreementCheckResponse = await fetch(
+                  `${process.env.SUPABASE_URL}/rest/v1/agreements?eviasignreference=eq.${encodeURIComponent(eviasignReference)}&select=id,status`,
+                  {
+                    method: 'GET',
+                    headers: {
+                      'apikey': process.env.SUPABASE_SERVICE_KEY,
+                      'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`
+                    }
+                  }
+                );
+                
+                if (agreementCheckResponse.ok) {
+                  const agreements = await agreementCheckResponse.json();
+                  if (agreements && agreements.length > 0) {
+                    console.log(`Found related agreement ID: ${agreements[0].id}, status: ${agreements[0].status}`);
+                    logToFile(`Found related agreement ID: ${agreements[0].id}, status: ${agreements[0].status}`);
+                  } else {
+                    console.warn(`No agreement found with eviasignreference: ${eviasignReference}`);
+                    logToFile(`Warning: No agreement found with eviasignreference: ${eviasignReference}`);
+                  }
+                }
+              } catch (checkError) {
+                console.error('Error checking related agreement:', checkError);
+              }
+            }
+          } else {
+            const errorText = await directResponse.text();
+            console.error(`Database insertion failed (attempt ${retryCount + 1}): ${errorText}`);
+            logToFile(`Database insertion failed (attempt ${retryCount + 1}): ${errorText}`);
+            retryCount++;
+          }
+        } catch (insertError) {
+          console.error(`Error during insertion attempt ${retryCount + 1}:`, insertError);
+          logToFile(`Error during insertion attempt ${retryCount + 1}: ${insertError.message}`);
+          retryCount++;
+        }
+      }
+      
+      // If all retries failed, use fallback method
+      if (!insertSuccessful) {
+        console.log('All direct insertion attempts failed, falling back to normal insertWebhookEvent method...');
+        logToFile('All direct insertion attempts failed, falling back to insertWebhookEvent method');
+        
+        try {
+          const result = await insertWebhookEvent(webhookData);
+          
+          if (result && result.data) {
+            storedEventId = result.data.id;
+            console.log(`Webhook stored via fallback with ID: ${storedEventId}`);
+            logToFile(`Webhook stored via fallback with ID: ${storedEventId}`);
+            insertSuccessful = true;
+          } else {
+            console.error('Fallback insertion also failed:', result?.error || 'No error details');
+            logToFile(`Fallback insertion also failed: ${result?.error || 'No error details'}`);
+          }
+        } catch (fallbackError) {
+          console.error('Exception in fallback insertion:', fallbackError);
+          logToFile(`Exception in fallback insertion: ${fallbackError.message}`);
+        }
+      }
+      
+      // Now broadcast to dashboard AFTER database insertion (successful or not)
+      console.log('About to broadcast webhook to dashboard UI');
+      logToFile('About to broadcast webhook to dashboard UI');
+      try {
+        broadcastWebhook(webhookData);
+        console.log('Successfully completed dashboard UI broadcast');
+        logToFile('Successfully completed dashboard UI broadcast');
+      } catch (broadcastError) {
+        console.error('Error broadcasting to dashboard:', broadcastError);
+        logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
+        // Continue processing even if broadcast fails
+      }
+    } catch (dbError) {
+      console.error('Exception storing webhook event in database:', dbError);
+      logToFile(`Error storing webhook event in database: ${dbError.message}`);
+      
+      // Still broadcast to dashboard for visibility
+      console.log('About to broadcast webhook to dashboard UI (despite database error)');
+      logToFile('About to broadcast webhook to dashboard UI (despite database error)');
+      try {
+        broadcastWebhook(webhookData);
+        console.log('Successfully completed dashboard UI broadcast');
+        logToFile('Successfully completed dashboard UI broadcast');
+      } catch (broadcastError) {
+        console.error('Error broadcasting to dashboard:', broadcastError);
+        logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
+      }
     }
     
     // Increment event count for status page
     eventCount++;
     console.log('Event count incremented');
     
-    // Emit to the separate database processor (asynchronous)
-    console.log('Emitting webhook to database processor');
-    logToFile('Emitting webhook to database processor');
-    webhookProcessor.emit('new-webhook', webhookData);
+    // Only do additional processing if specifically required
+    // Database triggers are likely handling most of the actual logic now
+    if (process.env.ENABLE_WEBHOOK_ADDITIONAL_PROCESSING === 'true') {
+      // Send to the processing queue for any additional application-level logic
+      console.log('Emitting webhook to processor for additional application-level processing');
+      logToFile('Emitting webhook to processor for additional application-level processing');
+      webhookProcessor.emit('new-webhook', webhookData, storedEventId);
+    } else {
+      console.log('Skipping additional application processing - database triggers handle the logic');
+      logToFile('Skipping additional application processing - database triggers handle the logic');
+    }
     
-    // Always return success immediately to the webhook caller
-    console.log('Returning immediate success response to webhook caller');
-    logToFile('Returning immediate success response to webhook caller');
+    // Always return success to the webhook caller
+    console.log('Returning success response to webhook caller');
+    logToFile('Returning success response to webhook caller');
     return res.status(200).json({ 
       success: true, 
-      message: 'Webhook received and processing asynchronously.' 
+      message: 'Webhook received and processed.' 
     });
   } catch (error) {
     // Handle any unexpected errors at the top level
@@ -620,6 +839,12 @@ app.get('/dashboard', (req, res) => {
       border-radius: 4px;
       font-size: 0.85rem;
     }
+    .debug-links {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 15px;
+      gap: 15px;
+    }
   </style>
 </head>
 <body>
@@ -637,6 +862,13 @@ app.get('/dashboard', (req, res) => {
   </nav>
 
   <div class="container-fluid">
+    <!-- Debug links -->
+    <div class="debug-links">
+      <a href="/logs" class="btn btn-sm btn-outline-primary">View Standard Logs</a>
+      <a href="/azure-logs" class="btn btn-sm btn-outline-primary">View Azure Logs</a>
+      <a href="/status" class="btn btn-sm btn-outline-secondary">View Server Status</a>
+    </div>
+
     <div class="stats mb-4">
       <div class="stats-card">
         <div class="stats-value" id="total-count">0</div>
@@ -675,6 +907,16 @@ app.get('/dashboard', (req, res) => {
   </div>
   
   <script>
+    // Add connection troubleshooting messages
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        const status = document.getElementById('connection-status');
+        if (status.textContent === 'Connecting...') {
+          status.innerHTML = 'Connection issues. <a href="/azure-logs" style="color: white; text-decoration: underline;">Check logs</a>';
+        }
+      }, 5000); // After 5 seconds
+    });
+  
     // Connect to WebSocket
     const socket = io();
     const webhooksContainer = document.getElementById('webhooks-container');
@@ -704,6 +946,36 @@ app.get('/dashboard', (req, res) => {
     socket.on('disconnect', () => {
       connectionStatus.className = 'badge bg-danger';
       connectionStatus.textContent = 'Disconnected';
+    });
+    
+    socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
+      connectionStatus.className = 'badge bg-danger';
+      connectionStatus.innerHTML = 'Connection Error. <a href="/azure-logs" style="color: white; text-decoration: underline;">Check logs</a>';
+      
+      // Add connection error card
+      const errorCard = document.createElement('div');
+      errorCard.className = 'card webhook-card event-5'; // Red border
+      errorCard.innerHTML = `
+        <div class="card-header">
+          <div>
+            <span class="badge bg-danger">Connection Error</span>
+          </div>
+          <span class="timestamp">\${new Date().toLocaleString()}</span>
+        </div>
+        <div class="card-body">
+          <p>There was an error connecting to the server. Check the following:</p>
+          <ul>
+            <li>Server is running</li>
+            <li>WebSocket connections are enabled on Azure</li>
+            <li>Check <a href="/azure-logs">Azure logs</a> for more details</li>
+          </ul>
+          <p>Error: \${error.message || 'Unknown error'}</p>
+        </div>
+      `;
+      
+      // Add to container at the top
+      webhooksContainer.insertBefore(errorCard, webhooksContainer.firstChild);
     });
     
     // Initial webhooks load
@@ -847,6 +1119,10 @@ app.get('/dashboard', (req, res) => {
           EventTime: new Date().toISOString()
         };
         
+        // Show feedback that test is being sent
+        connectionStatus.className = 'badge bg-warning';
+        connectionStatus.textContent = 'Sending test...';
+        
         // Send test webhook request
         const response = await fetch('/webhook/evia-sign', {
           method: 'POST',
@@ -860,9 +1136,20 @@ app.get('/dashboard', (req, res) => {
           throw new Error(\`HTTP error \${response.status}\`);
         }
         
+        // Show success
+        connectionStatus.className = 'badge bg-success';
+        connectionStatus.textContent = 'Test sent!';
+        setTimeout(() => {
+          if (connectionStatus.textContent === 'Test sent!') {
+            connectionStatus.textContent = 'Connected';
+          }
+        }, 3000);
+        
         console.log('Test webhook sent successfully');
       } catch (error) {
         console.error('Error sending test webhook:', error);
+        connectionStatus.className = 'badge bg-danger';
+        connectionStatus.textContent = 'Test failed!';
         alert('Error sending test webhook: ' + error.message);
       }
     });
@@ -899,7 +1186,7 @@ io.on('connection', (socket) => {
 });
 
 // Set up the database processor listener
-webhookProcessor.on('new-webhook', async (webhookData) => {
+webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
   const requestId = webhookData.RequestId || 'unknown';
   const eventId = webhookData.EventId || 'unknown';
   const processingId = `${new Date().toISOString().replace(/[:.]/g, '')}-${requestId.substring(0, 8)}`;
@@ -910,121 +1197,7 @@ webhookProcessor.on('new-webhook', async (webhookData) => {
   logToFile(`=== [${processingId}] DATABASE PROCESSOR STARTING FOR WEBHOOK ===`);
   logToFile(`[${processingId}] RequestId: ${requestId}, EventId: ${eventId}, Type: ${webhookData.EventDescription || 'unknown'}`);
   
-  let storedEventId = null;
-  
   try {
-    // Store in Supabase before processing
-    console.log(`\n=== [${processingId}] BEGINNING DATABASE STORAGE ===`);
-    logToFile(`=== [${processingId}] BEGINNING DATABASE STORAGE ===`);
-    
-    try {
-      console.log(`[${processingId}] Storing webhook event in Supabase`);
-      console.log(`[${processingId}] ENVIRONMENT CHECK:`);
-      console.log(`[${processingId}] - SUPABASE_URL set: ${!!process.env.SUPABASE_URL}`);
-      console.log(`[${processingId}] - SUPABASE_SERVICE_KEY set: ${!!process.env.SUPABASE_SERVICE_KEY}`);
-      
-      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
-        throw new Error('Missing Supabase credentials in environment');
-      }
-      
-      // Create a properly formatted record for debugging
-      const testRecord = {
-        event_type: webhookData.EventDescription || 'unknown',
-        eviasignreference: webhookData.RequestId,
-        user_name: webhookData.UserName || null,
-        user_email: webhookData.Email || null,
-        subject: webhookData.Subject || null,
-        event_id: webhookData.EventId !== undefined ? Number(webhookData.EventId) : null,
-        event_time: webhookData.EventTime || new Date().toISOString(),
-        raw_data: JSON.stringify(webhookData),
-        createdat: new Date().toISOString(),
-        updatedat: new Date().toISOString(),
-        processed: false
-      };
-      
-      console.log(`[${processingId}] PREPARED RECORD:`);
-      console.log(JSON.stringify(testRecord, null, 2));
-      
-      // Try direct insert for debugging
-      console.log(`[${processingId}] Trying direct HTTP insert...`);
-      logToFile(`[${processingId}] Attempting direct HTTP insert to webhook_events table`);
-      
-      // NOTE - This is a debug implementation to bypass supabaseClient.js
-      try {
-        const insertStart = Date.now();
-        const directResponse = await fetch(
-          `${process.env.SUPABASE_URL}/rest/v1/webhook_events`,
-          {
-            method: 'POST',
-            headers: {
-              'apikey': process.env.SUPABASE_SERVICE_KEY,
-              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
-              'Content-Type': 'application/json',
-              'Prefer': 'return=representation'
-            },
-            body: JSON.stringify(testRecord)
-          }
-        );
-        const insertDuration = Date.now() - insertStart;
-        
-        console.log(`[${processingId}] Direct insert response status: ${directResponse.status} (took ${insertDuration}ms)`);
-        logToFile(`[${processingId}] Direct insert response status: ${directResponse.status} (took ${insertDuration}ms)`);
-        
-        if (directResponse.ok) {
-          const data = await directResponse.json();
-          console.log(`[${processingId}] Direct insert successful. Response:`);
-          console.log(JSON.stringify(data, null, 2));
-          storedEventId = data[0]?.id;
-          console.log(`[${processingId}] Webhook stored with ID: ${storedEventId}`);
-          logToFile(`[${processingId}] Webhook stored with ID: ${storedEventId}`);
-        } else {
-          const errorText = await directResponse.text();
-          console.error(`[${processingId}] Direct insert failed: ${errorText}`);
-          logToFile(`[${processingId}] Direct insert failed: ${errorText}`);
-          
-          // Fall back to normal method
-          console.log(`[${processingId}] Falling back to normal insertWebhookEvent method...`);
-          logToFile(`[${processingId}] Falling back to normal insertWebhookEvent method`);
-          const storedResult = await insertWebhookEvent(webhookData);
-          
-          if (storedResult && storedResult.data && storedResult.data.id) {
-            storedEventId = storedResult.data.id;
-            console.log(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
-            logToFile(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
-          } else if (storedResult && !storedResult.success) {
-            console.error(`[${processingId}] Storing webhook failed:`, storedResult.error);
-            logToFile(`[${processingId}] Error storing webhook: ${storedResult.error}`);
-            // Continue processing despite storage failure
-          } else {
-            console.error(`[${processingId}] No ID returned from webhook storage`);
-            logToFile(`[${processingId}] Warning: No ID returned from webhook storage`);
-            // Continue processing despite missing ID
-          }
-        }
-      } catch (directError) {
-        console.error(`[${processingId}] Error with direct insert attempt:`, directError);
-        logToFile(`[${processingId}] Error with direct insert attempt: ${directError.message}`);
-        
-        // Fall back to normal method
-        console.log(`[${processingId}] Falling back to normal insertWebhookEvent method after direct error...`);
-        logToFile(`[${processingId}] Falling back to normal insertWebhookEvent method after direct error`);
-        const storedResult = await insertWebhookEvent(webhookData);
-        
-        if (storedResult && storedResult.data && storedResult.data.id) {
-          storedEventId = storedResult.data.id;
-          console.log(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
-          logToFile(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
-        } else {
-          console.error(`[${processingId}] Fallback storage also failed`);
-          logToFile(`[${processingId}] Fallback storage also failed`);
-        }
-      }
-    } catch (dbError) {
-      console.error(`[${processingId}] Exception storing webhook event in database:`, dbError);
-      logToFile(`[${processingId}] Exception storing webhook event in database: ${dbError.message}`);
-      // Continue with processing even if storage fails
-    }
-    
     // Process the webhook (detailed business logic)
     console.log(`\n=== [${processingId}] BEGINNING EVENT PROCESSING ===`);
     logToFile(`=== [${processingId}] BEGINNING EVENT PROCESSING ===`);
@@ -1145,6 +1318,60 @@ webhookProcessor.on('new-webhook', async (webhookData) => {
     logToFile(`[${processingId}] Critical error in webhook processor: ${error.message}`);
     console.log(`[${processingId}] STACK TRACE:`, error.stack);
     logToFile(`[${processingId}] Stack trace: ${error.stack || 'No stack trace available'}`);
+  }
+});
+
+// Add an Azure logs endpoint
+app.get('/azure-logs', (req, res) => {
+  try {
+    let logs = 'No logs available';
+    
+    // Check if running in Azure
+    if (process.env.WEBSITE_SITE_NAME) {
+      const azureLogPath = path.join('D:\\home\\LogFiles', 'webhook-logs.txt');
+      
+      if (fs.existsSync(azureLogPath)) {
+        // Read the most recent logs (last 100 lines)
+        logs = fs.readFileSync(azureLogPath, 'utf8')
+          .split('\n')
+          .filter(line => line.trim())
+          .slice(-100)
+          .join('\n');
+      } else {
+        logs = 'Azure log file does not exist yet. Will be created on next webhook event.';
+      }
+    } else {
+      logs = 'Not running in Azure environment';
+    }
+    
+    res.send(`
+      <html>
+        <head>
+          <title>Azure Webhook Logs</title>
+          <style>
+            body { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 1000px; margin: 0 auto; padding: 20px; }
+            h1 { color: #2563eb; }
+            pre { background: #f3f4f6; padding: 12px; border-radius: 4px; overflow: auto; white-space: pre-wrap; }
+            a { color: #2563eb; }
+            .controls { margin-bottom: 15px; }
+          </style>
+        </head>
+        <body>
+          <h1>Azure Webhook Logs</h1>
+          <div class="controls">
+            <a href="/">Back to status page</a> | 
+            <a href="/dashboard">Back to dashboard</a> | 
+            <a href="/azure-logs" onclick="location.reload(); return false;">Refresh Logs</a>
+          </div>
+          <div>
+            <strong>Azure Site:</strong> ${process.env.WEBSITE_SITE_NAME || 'Not running in Azure'}
+          </div>
+          <pre>${logs}</pre>
+        </body>
+      </html>
+    `);
+  } catch (err) {
+    res.status(500).send(`Error reading Azure logs: ${err.message}`);
   }
 });
 
