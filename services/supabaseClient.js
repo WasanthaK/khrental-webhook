@@ -198,19 +198,19 @@ async function insertWebhookEvent(eventData) {
     
     log(`Processing webhook: EventId=${eventData.EventId}, RequestId=${eventData.RequestId}`, 'info');
     
-    // Validate and normalize the RequestId as UUID
-    const { valid, value: validRequestId } = validateAndNormalizeUUID(eventData.RequestId);
+    // Validate and normalize the UUID for the eviasignreference column
+    const { valid, value: validatedUuid } = validateAndNormalizeUUID(eventData.RequestId);
     
     if (!valid) {
-      log(`Converting invalid RequestId '${eventData.RequestId}' to UUID: ${validRequestId}`, 'warn');
+      log(`Converting invalid RequestId '${eventData.RequestId}' to UUID: ${validatedUuid}`, 'warn');
     } else {
-      log(`Using valid UUID: ${validRequestId}`, 'info');
+      log(`Using valid UUID: ${validatedUuid}`, 'info');
     }
     
-    // Create the database record
+    // Prepare record using all fields from the schema
     const record = {
       event_type: eventData.EventDescription || 'unknown',
-      eviasignreference: validRequestId,
+      eviasignreference: validatedUuid,
       user_name: eventData.UserName || null,
       user_email: eventData.Email || null,
       subject: eventData.Subject || null,
@@ -222,10 +222,35 @@ async function insertWebhookEvent(eventData) {
       processed: false
     };
     
-    log(`Attempting to store event in database`, 'info');
+    log(`Attempting to insert webhook event with UUID: ${validatedUuid}`, 'info');
     
-    // Try direct HTTP method first
+    // First attempt with standard Supabase client
     try {
+      const { data, error } = await supabase
+        .from('webhook_events')
+        .insert([record])
+        .select();
+        
+      if (!error) {
+        log(`Event inserted successfully with ID: ${data[0]?.id}`, 'info');
+        return { success: true, id: data[0]?.id };
+      } else {
+        log(`Supabase client insert failed: ${error.message}`, 'warn');
+        
+        // Continue to fallback if primary method fails
+        if (error.code === '23505') {
+          log('Event already exists in database', 'warn');
+          return { success: true, id: validatedUuid, warning: 'Event already exists' };
+        }
+      }
+    } catch (clientError) {
+      log(`Exception in Supabase client insert: ${clientError.message}`, 'warn');
+    }
+    
+    // Fallback to direct HTTP method
+    try {
+      log('Attempting direct HTTP insert as fallback', 'info');
+      
       const response = await fetch(
         `${SUPABASE_URL}/rest/v1/webhook_events`,
         {
@@ -242,63 +267,39 @@ async function insertWebhookEvent(eventData) {
       
       if (response.ok) {
         const data = await response.json();
-        log(`Event stored successfully with ID: ${data[0]?.id}`, 'info');
-        return { success: true, data: data[0] };
+        log(`Event inserted via HTTP with ID: ${data[0]?.id}`, 'info');
+        return { success: true, id: data[0]?.id };
       } else {
         const errorText = await response.text();
         log(`Direct HTTP insert failed: ${errorText}`, 'error');
         
-        // Try Supabase client as fallback
-        log('Attempting Supabase client insert as fallback', 'info');
-        
-        const { data, error } = await supabase
-          .from('webhook_events')
-          .insert([record])
-          .select();
-          
-        if (error) {
-          log(`Supabase client insert failed: ${error.message}`, 'error');
-          
-          // Return virtual record to allow processing to continue
-          return { 
-            success: true, 
-            data: { 
-              id: `virtual-${Date.now()}`,
-              eviasignreference: validRequestId,
-              virtual: true 
-            },
-            warning: 'Using virtual record due to database issues'
-          };
-        }
-        
-        log(`Event stored via client with ID: ${data[0]?.id}`, 'info');
-        return { success: true, data: data[0] };
+        // Return best-effort ID for continued processing
+        return { 
+          success: true, 
+          id: validatedUuid,
+          warning: 'Database insertion failed, using validated UUID for processing'
+        };
       }
-    } catch (error) {
-      log(`Exception during database insert: ${error.message}`, 'error');
+    } catch (httpError) {
+      log(`Exception in HTTP insert: ${httpError.message}`, 'error');
       
-      // Return virtual record
+      // Return best-effort ID for continued processing
       return { 
         success: true, 
-        data: { 
-          id: `error-${Date.now()}`,
-          eviasignreference: validRequestId,
-          virtual: true 
-        },
-        warning: 'Using virtual record due to error'
+        id: validatedUuid,
+        warning: 'Exception during insertion, using validated UUID for processing'
       };
     }
   } catch (error) {
     log(`Unexpected error in insertWebhookEvent: ${error.message}`, 'error');
     
-    // Return a virtual record to allow processing to continue
-    return { 
-      success: true, 
-      data: { 
-        id: `exception-${Date.now()}`,
-        virtual: true 
-      },
-      warning: 'Using virtual record due to exception'
+    // Create a fallback ID if everything fails
+    const fallbackId = crypto.randomUUID();
+    
+    return {
+      success: true,
+      id: fallbackId,
+      warning: 'Unexpected error, using generated UUID for processing'
     };
   }
 }
@@ -324,23 +325,27 @@ function getEventTypeFromId(eventId) {
  * @param {Object} processingResult - Processing result data
  * @returns {Promise<Object>} Operation result
  */
-async function markWebhookEventProcessed(eventId, processingResult) {
+async function markWebhookEventProcessed(eventId, processingResult = {}) {
   try {
     if (!eventId) {
-      log('Cannot mark event as processed: missing event ID', 'warn');
-      return { success: false, warning: 'Missing event ID' };
+      log('Cannot mark event as processed: missing event ID', 'error');
+      return { success: false, error: 'Missing event ID' };
     }
     
     log(`Marking webhook event ${eventId} as processed`, 'info');
     
-    // Update data
+    // Prepare update data with all relevant fields from the schema
     const updateData = {
       processed: true,
+      processedat: new Date().toISOString(),
       updatedat: new Date().toISOString()
     };
     
+    // Log the update operation
+    log(`Updating webhook event with data: ${JSON.stringify(updateData)}`, 'info');
+    
+    // Direct HTTP update - simple and reliable
     try {
-      // Try direct HTTP update
       const response = await fetch(
         `${SUPABASE_URL}/rest/v1/webhook_events?id=eq.${encodeURIComponent(eventId)}`,
         {
@@ -362,7 +367,7 @@ async function markWebhookEventProcessed(eventId, processingResult) {
         const errorText = await response.text();
         log(`HTTP update failed: ${errorText}`, 'error');
         
-        // Try Supabase client as fallback
+        // Fallback to Supabase client
         log('Trying Supabase client update as fallback', 'info');
         
         const { error } = await supabase
@@ -375,31 +380,16 @@ async function markWebhookEventProcessed(eventId, processingResult) {
           return { success: true };
         } else {
           log(`Client update failed: ${error.message}`, 'error');
-          
-          // Return success with warning to allow processing to continue
-          return {
-            success: true,
-            warning: 'Could not mark event as processed in database'
-          };
+          return { success: false, error: error.message };
         }
       }
     } catch (error) {
       log(`Exception marking event as processed: ${error.message}`, 'error');
-      
-      // Continue webhook processing despite the error
-      return {
-        success: true,
-        warning: 'Exception updating database status'
-      };
+      return { success: false, error: error.message };
     }
   } catch (error) {
     log(`Unexpected error in markWebhookEventProcessed: ${error.message}`, 'error');
-    
-    // Continue webhook processing despite the error
-    return {
-      success: true,
-      warning: 'Unexpected error updating status'
-    };
+    return { success: false, error: error.message };
   }
 }
 
