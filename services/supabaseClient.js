@@ -192,7 +192,7 @@ async function insertWebhookEvent(eventData) {
     const record = {
       event_type: eventData.EventDescription || 'unknown',
       // Store as string explicitly to avoid UUID conversion issues
-      request_id: validRequestId,  // No toString() to keep as proper UUID
+      eviasignreference: validRequestId,  // Use eviasignreference instead of request_id
       user_name: eventData.UserName || null,
       user_email: eventData.Email || null,
       subject: eventData.Subject || null,
@@ -204,7 +204,7 @@ async function insertWebhookEvent(eventData) {
       processed: false
     };
 
-    console.log(`[supabaseClient] Inserting record for event_id: ${record.event_id}, request_id: ${record.request_id}`);
+    console.log(`[supabaseClient] Inserting record for event_id: ${record.event_id}, eviasignreference: ${record.eviasignreference}`);
 
     // Try direct HTTP approach which gives us more control over the query
     try {
@@ -215,6 +215,9 @@ async function insertWebhookEvent(eventData) {
         ...record,
         raw_data: typeof record.raw_data === 'object' ? JSON.stringify(record.raw_data) : record.raw_data
       };
+      
+      // Log the exact data being sent to the database
+      console.log('[supabaseClient] Sending data to database:', JSON.stringify(recordForPost));
       
       const response = await fetch(
         `${SUPABASE_URL}/rest/v1/webhook_events`,
@@ -230,9 +233,12 @@ async function insertWebhookEvent(eventData) {
         }
       );
       
+      // Debug response status
+      console.log(`[supabaseClient] HTTP response status: ${response.status}`);
+      
       if (response.ok) {
         const data = await response.json();
-        console.log('[supabaseClient] Direct HTTP insert successful');
+        console.log('[supabaseClient] Direct HTTP insert successful, response data:', JSON.stringify(data));
         return { success: true, data: data[0] };
       } else {
         const errorText = await response.text();
@@ -240,6 +246,9 @@ async function insertWebhookEvent(eventData) {
         
         // If direct insert fails, try standard supabase client as fallback
         console.log('[supabaseClient] Trying Supabase client insert as fallback');
+        
+        // Log the data being sent to Supabase client
+        console.log('[supabaseClient] Sending data via Supabase client:', JSON.stringify(record));
         
         const { data: insertData, error: insertError } = await supabase
           .from('webhook_events')
@@ -254,7 +263,7 @@ async function insertWebhookEvent(eventData) {
             success: true,
             data: { 
               id: `local-${Date.now()}`, 
-              request_id: validRequestId,
+              eviasignreference: validRequestId,
               virtual: true 
             },
             warning: 'Created virtual record due to database issues'
@@ -272,7 +281,7 @@ async function insertWebhookEvent(eventData) {
         success: true,
         data: { 
           id: `error-${Date.now()}`,
-          request_id: validRequestId,
+          eviasignreference: validRequestId,
           virtual: true 
         },
         warning: 'Created virtual record due to insert error'
@@ -430,7 +439,7 @@ const testInsertWebhookEvent = async () => {
       // Create a simple test event with minimal fields - always include event_type
       const testEvent = {
         event_type: 'test', // Always include as it's required
-        request_id: `test_${Date.now()}`,
+        eviasignreference: `test_${Date.now()}`,
         processed: false
       };
       
