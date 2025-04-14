@@ -500,13 +500,6 @@ async function handleEviaSignWebhook(req, res) {
     console.log(`[${processingId}] Webhook headers:`, req.headers);
     console.log(`[${processingId}] Webhook data:`, JSON.stringify(webhookData, null, 2));
     
-    // Validate webhook data
-    if (!webhookData || !webhookData.EventId) {
-      console.error(`[${processingId}] Invalid webhook data received`);
-      logToFile(`Invalid webhook data received: ${JSON.stringify(webhookData)}`);
-      return res.status(400).send('Invalid webhook data');
-    }
-    
     // Step 1: Identify event type
     const eventId = webhookData.EventId;
     let eventTypeName = 'Unknown';
@@ -613,7 +606,8 @@ async function handleEviaSignWebhook(req, res) {
         type: eventTypeName,
         requestId: webhookData.RequestId,
         timestamp: eventTimestamp,
-        eventId: webhookData.EventId
+        eventId: webhookData.EventId,
+        receivedAt: new Date().toISOString() // Add this to match dashboard expectations
       };
       
       // Add event-type specific details
@@ -623,33 +617,38 @@ async function handleEviaSignWebhook(req, res) {
           break;
         case 2: // SignatoryCompleted
           // Add signatory details
-          eventDetails.userName = webhookData.UserName;
-          eventDetails.email = webhookData.Email;
-          eventDetails.subject = webhookData.Subject;
+          eventDetails.UserName = webhookData.UserName;
+          eventDetails.Email = webhookData.Email;
+          eventDetails.Subject = webhookData.Subject;
           break;
         case 3: // RequestCompleted
           // Add document info
-          eventDetails.userName = webhookData.UserName;
-          eventDetails.email = webhookData.Email;
-          eventDetails.subject = webhookData.Subject;
+          eventDetails.UserName = webhookData.UserName;
+          eventDetails.Email = webhookData.Email;
+          eventDetails.Subject = webhookData.Subject;
           eventDetails.hasDocuments = webhookData.Documents && webhookData.Documents.length > 0;
           eventDetails.documentCount = webhookData.Documents ? webhookData.Documents.length : 0;
           break;
         case 5: // RequestRejected
           // Add rejection details if available
-          eventDetails.userName = webhookData.UserName;
-          eventDetails.email = webhookData.Email;
+          eventDetails.UserName = webhookData.UserName;
+          eventDetails.Email = webhookData.Email;
           eventDetails.rejectReason = webhookData.RejectReason || 'No reason provided';
           break;
       }
       
       console.log(`[${processingId}] Broadcasting to dashboard...`);
       
-      // Broadcast to all connected clients
-      io.emit('webhook-event', {
-        event: 'received',
-        data: eventDetails
-      });
+      // Store in recent webhooks for new clients
+      recentWebhooks.push(webhookData);
+      
+      // Keep only the last 100 webhooks
+      if (recentWebhooks.length > 100) {
+        recentWebhooks.splice(0, recentWebhooks.length - 100);
+      }
+      
+      // Send to all connected clients - IMPORTANT: use 'new-webhook' event
+      io.emit('new-webhook', webhookData);
       
       console.log(`[${processingId}] Event broadcast completed`);
       logToFile(`Event broadcast completed: ${eventTypeName}`);
