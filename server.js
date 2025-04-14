@@ -443,9 +443,13 @@ const handleEviaSignWebhook = async (req, res) => {
         console.log(`Webhook event stored in Supabase with ID: ${storedEventId}`);
         logToFile(`Webhook event stored in Supabase with ID: ${storedEventId}`);
       } else if (storedResult && !storedResult.success) {
-        throw new Error(storedResult.error || 'Unknown error storing webhook');
+        console.error('Storing webhook failed:', storedResult.error);
+        logToFile(`Error storing webhook: ${storedResult.error}`);
+        // Continue processing despite storage failure
       } else {
-        throw new Error('No ID returned from webhook storage');
+        console.error('No ID returned from webhook storage');
+        logToFile('Warning: No ID returned from webhook storage');
+        // Continue processing despite missing ID
       }
     } catch (dbError) {
       console.error('Error storing webhook event in database:', dbError);
@@ -489,6 +493,10 @@ const handleEviaSignWebhook = async (req, res) => {
         logToFile(`Error marking webhook event as processed: ${markError.message}`);
       }
     }
+    
+    // Ensure we log the full processing flow completion
+    console.log(`Webhook processing complete for RequestId=${webhookData.RequestId}`);
+    logToFile(`Webhook processing complete for RequestId=${webhookData.RequestId}`);
     
     // Return success response to the webhook sender
     return res.status(200).json({ 

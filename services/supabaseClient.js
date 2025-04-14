@@ -297,59 +297,79 @@ function getEventTypeFromId(eventId) {
 /**
  * Mark a webhook event as processed
  * @param {string} eventId - The ID of the webhook event
- * @param {Object} result - The processing result
- * @returns {Object} - Result with success flag and data or error
+ * @param {Object} processingResult - Result of processing the webhook
+ * @returns {Promise<Object>} The result of the operation
  */
-const markWebhookEventProcessed = async (eventId, result) => {
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-    log('Cannot mark webhook event as processed: Missing Supabase credentials');
-    return { success: false, error: 'Missing Supabase credentials' };
-  }
-
+async function markWebhookEventProcessed(eventId, processingResult) {
   try {
-    log(`Marking webhook event ${eventId} as processed using direct HTTP PATCH`);
-    
-    // Use direct HTTP PATCH request to bypass all schema cache issues
-    const response = await customFetch(
-      `${SUPABASE_URL}/rest/v1/webhook_events?id=eq.${encodeURIComponent(eventId)}`,
-      {
-        method: 'PATCH',
-        headers: {
-          'apikey': SUPABASE_SERVICE_KEY,
-          'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-          'Content-Type': 'application/json',
-          'Prefer': 'return=minimal'
-        },
-        body: JSON.stringify({ 
-          processed: true 
-        })
-      }
-    );
-    
-    if (response.ok) {
-      log(`✅ Successfully marked webhook event ${eventId} as processed (HTTP status ${response.status})`);
-      return { success: true };
-    } else {
-      const errorText = await response.text().catch(() => 'Failed to read error response');
-      log(`Failed to mark webhook event as processed: HTTP ${response.status} - ${errorText}`);
-      
-      // Even if this fails, we want to continue processing the webhook
-      // Just report the error but treat it as a success for the application flow
-      return { 
-        success: true, 
-        warning: `HTTP error ${response.status} but ignoring for application continuity`
-      };
+    if (!eventId) {
+      console.warn('[supabaseClient] Cannot mark event as processed: missing event ID');
+      return { success: false, warning: 'Missing event ID' };
     }
-  } catch (error) {
-    log(`Exception marking webhook event as processed: ${error.message}`);
+
+    console.log(`[supabaseClient] Marking webhook event ${eventId} as processed`);
     
-    // Even if this fails, we want to continue processing the webhook
-    return { 
-      success: true, 
-      warning: `Exception ${error.message} but ignoring for application continuity`
+    // Prepare the update data
+    const updateData = {
+      processed: true,
+      processed_at: new Date().toISOString(),
+      processing_result: processingResult || null,
+      updatedat: new Date().toISOString()
     };
+
+    // Log the update operation for debugging
+    console.log(`[supabaseClient] Updating event ${eventId} with:`, 
+                JSON.stringify(updateData, null, 2).substring(0, 200) + '...');
+
+    // Update the record
+    const { data, error } = await supabase
+      .from('webhook_events')
+      .update(updateData)
+      .eq('id', eventId)
+      .select();
+
+    if (error) {
+      console.error(`[supabaseClient] Error marking webhook event ${eventId} as processed:`, error);
+      
+      // Try a fallback direct HTTP approach if the supabase client fails
+      try {
+        console.log('[supabaseClient] Attempting direct HTTP API update as fallback');
+        
+        const response = await customFetch(
+          `${SUPABASE_URL}/rest/v1/webhook_events?id=eq.${encodeURIComponent(eventId)}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'apikey': SUPABASE_SERVICE_KEY,
+              'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=representation'
+            },
+            body: JSON.stringify(updateData)
+          }
+        );
+        
+        if (response.ok) {
+          console.log('[supabaseClient] Direct HTTP update successful');
+          return { success: true };
+        } else {
+          const errorText = await response.text();
+          console.error(`[supabaseClient] Direct HTTP update failed: ${response.status} - ${errorText}`);
+          return { success: false, warning: `HTTP error ${response.status}: ${errorText}` };
+        }
+      } catch (httpError) {
+        console.error('[supabaseClient] Fallback HTTP update failed:', httpError);
+        return { success: false, warning: error.message };
+      }
+    }
+
+    console.log(`[supabaseClient] Webhook event ${eventId} marked as processed successfully`);
+    return { success: true, data: data?.[0] };
+  } catch (error) {
+    console.error('[supabaseClient] Exception in markWebhookEventProcessed:', error);
+    return { success: false, warning: error.message };
   }
-};
+}
 
 /**
  * Test insert a sample webhook event to verify database permissions

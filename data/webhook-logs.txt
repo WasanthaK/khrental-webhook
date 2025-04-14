@@ -40,3 +40,11 @@
     at ModuleJob.run (node:internal/modules/esm/module_job:268:25)
     at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:543:26)
     at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:116:5)
+[2025-04-14T07:41:33.280Z] Received webhook: RequestId=test-webhook-id, EventId=3, UserName=Test User
+[2025-04-14T07:41:33.730Z] Error storing webhook: operator does not exist: uuid = text
+[2025-04-14T07:41:34.286Z] Error in webhook processing: No matching agreement found
+[2025-04-14T07:41:34.287Z] Webhook processing complete for RequestId=test-webhook-id
+[2025-04-14T07:42:08.418Z] Received webhook: RequestId=test-id-123, EventId=3, UserName=Test User
+[2025-04-14T07:42:08.868Z] Error storing webhook: operator does not exist: uuid = text
+[2025-04-14T07:42:09.420Z] Error in webhook processing: No matching agreement found
+[2025-04-14T07:42:09.420Z] Webhook processing complete for RequestId=test-id-123

@@ -24,3 +24,17 @@
 [2025-04-13T23:26:53.539Z] No matches with exact fields, trying case-insensitive search
 [2025-04-13T23:26:53.728Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
 [2025-04-13T23:26:53.729Z] Agreement not found: No matching agreement found
+[2025-04-14T07:41:33.730Z] Processing event 3 (RequestCompleted) for request test-webhook-id
+[2025-04-14T07:41:33.731Z] Looking for agreement with RequestId: test-webhook-id
+[2025-04-14T07:41:33.910Z] Error finding agreement with exact match: invalid input syntax for type uuid: "test-webhook-id"
+[2025-04-14T07:41:33.910Z] No exact match found, trying signature_request_id
+[2025-04-14T07:41:34.093Z] No matches with exact fields, trying case-insensitive search
+[2025-04-14T07:41:34.286Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-14T07:41:34.286Z] Agreement not found: No matching agreement found
+[2025-04-14T07:42:08.869Z] Processing event 3 (RequestCompleted) for request test-id-123
+[2025-04-14T07:42:08.869Z] Looking for agreement with RequestId: test-id-123
+[2025-04-14T07:42:09.040Z] Error finding agreement with exact match: invalid input syntax for type uuid: "test-id-123"
+[2025-04-14T07:42:09.041Z] No exact match found, trying signature_request_id
+[2025-04-14T07:42:09.237Z] No matches with exact fields, trying case-insensitive search
+[2025-04-14T07:42:09.419Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-14T07:42:09.419Z] Agreement not found: No matching agreement found
