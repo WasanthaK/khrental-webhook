@@ -41,6 +41,53 @@ const LOGS_PATH = path.join(DB_DIR, 'webhook-logs.txt');
 const recentWebhooks = [];
 const MAX_STORED_WEBHOOKS = 50;
 
+// Simple JSON-based database for local event storage
+const localDb = {
+  addEvent: function(event) {
+    try {
+      if (!fs.existsSync(EVENTS_DB_PATH)) {
+        fs.writeFileSync(EVENTS_DB_PATH, JSON.stringify({ events: [] }, null, 2));
+      }
+      
+      // Read existing events
+      const data = JSON.parse(fs.readFileSync(EVENTS_DB_PATH, 'utf8'));
+      
+      // Add new event with timestamp
+      const newEvent = {
+        ...event,
+        localStorageTime: new Date().toISOString()
+      };
+      
+      data.events.unshift(newEvent);
+      
+      // Keep only the most recent 100 events
+      if (data.events.length > 100) {
+        data.events = data.events.slice(0, 100);
+      }
+      
+      // Write back to file
+      fs.writeFileSync(EVENTS_DB_PATH, JSON.stringify(data, null, 2));
+      
+      return { success: true, message: 'Event stored locally' };
+    } catch (error) {
+      console.error('Error storing event in local DB:', error);
+      return { success: false, error: error.message };
+    }
+  },
+  getEvents: function() {
+    try {
+      if (!fs.existsSync(EVENTS_DB_PATH)) {
+        return { events: [] };
+      }
+      
+      return JSON.parse(fs.readFileSync(EVENTS_DB_PATH, 'utf8'));
+    } catch (error) {
+      console.error('Error reading local events:', error);
+      return { events: [] };
+    }
+  }
+};
+
 // Add a utility function to filter out schema cache warnings
 function filterLogMessage(message) {
   // Don't log schema cache or column-related warnings/errors
@@ -100,11 +147,13 @@ function broadcastWebhook(webhookData) {
 // Function to store webhook events in the local JSON database
 async function storeEventLocally(event) {
   try {
-    return db.addEvent(event);
+    console.log('Storing event locally as backup');
+    return localDb.addEvent(event);
   } catch (error) {
     console.error('Error storing event locally:', error);
     logToFile(`Error storing event locally: ${error.message}`);
-    throw error; // Re-throw to allow caller to handle
+    // Don't throw error to prevent cascading failures
+    return { success: false, error: error.message };
   }
 }
 
@@ -355,41 +404,104 @@ const handleEviaSignWebhook = async (req, res) => {
     
     // Log webhook
     console.log(`Processing webhook: RequestId=${webhookData.RequestId}, EventId=${webhookData.EventId}`);
+    logToFile(`Received webhook: RequestId=${webhookData.RequestId}, EventId=${webhookData.EventId}, UserName=${webhookData.UserName || 'N/A'}`);
+    
+    // Validate webhook data
+    if (!webhookData || !webhookData.EventId) {
+      console.error('Invalid webhook data: missing EventId');
+      logToFile('Error: Invalid webhook data - missing EventId');
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Invalid webhook data. EventId is required.' 
+      });
+    }
+    
+    // Always store locally first for backup
+    await storeEventLocally(webhookData);
     
     // Broadcast to dashboard
-    broadcastWebhook(webhookData);
+    try {
+      broadcastWebhook(webhookData);
+      console.log('Broadcasted webhook to dashboard');
+    } catch (broadcastError) {
+      console.error('Error broadcasting to dashboard:', broadcastError);
+      logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
+      // Continue processing even if broadcast fails
+    }
     
     // Increment event count for status page
     eventCount++;
     
-    // Process the webhook
-    const result = await processSignatureEvent(webhookData);
-    
-    // Store the webhook event in Supabase
+    // Store in Supabase before processing (recording raw event first)
+    let storedEventId = null;
     try {
-      const storedEvent = await insertWebhookEvent(webhookData);
+      console.log('Storing webhook event in Supabase');
+      const storedResult = await insertWebhookEvent(webhookData);
       
-      // Check if we've stored the event successfully
-      if (storedEvent && storedEvent.id) {
-        const marked = await markWebhookEventProcessed(storedEvent.id, result);
-        if (!marked) {
-          console.warn(`Warning: Could not mark webhook event ${storedEvent.id} as processed`);
-        }
+      if (storedResult && storedResult.data && storedResult.data.id) {
+        storedEventId = storedResult.data.id;
+        console.log(`Webhook event stored in Supabase with ID: ${storedEventId}`);
+        logToFile(`Webhook event stored in Supabase with ID: ${storedEventId}`);
+      } else if (storedResult && !storedResult.success) {
+        throw new Error(storedResult.error || 'Unknown error storing webhook');
+      } else {
+        throw new Error('No ID returned from webhook storage');
       }
     } catch (dbError) {
       console.error('Error storing webhook event in database:', dbError);
-      logToFile(`Error storing webhook event: ${dbError.message}`);
-      
-      // Store locally as backup if database fails
-      await storeEventLocally(webhookData);
+      logToFile(`Error storing webhook event in database: ${dbError.message}`);
+      // Continue with processing even if storage fails
     }
     
-    res.status(200).json({ success: true, message: 'Webhook processed successfully' });
-  } catch (error) {
-    console.error('Error processing webhook:', error);
-    logToFile(`Error processing webhook: ${error.message}`);
+    // Process the webhook
+    let processingResult = { success: false, error: 'Not processed' };
+    try {
+      console.log('Processing webhook event...');
+      processingResult = await processSignatureEvent(webhookData);
+      
+      if (processingResult.success) {
+        console.log('Successfully processed webhook:', processingResult);
+        logToFile(`Successfully processed webhook for agreement: ${processingResult.agreementId || 'unknown'}`);
+      } else {
+        console.error('Error in webhook processing:', processingResult.error);
+        logToFile(`Error in webhook processing: ${processingResult.error}`);
+      }
+    } catch (processingError) {
+      console.error('Exception processing webhook:', processingError);
+      logToFile(`Exception processing webhook: ${processingError.message}`);
+      processingResult = { success: false, error: processingError.message };
+    }
     
-    // Still try to store the event locally even if processing failed
+    // Mark as processed if we have an ID
+    if (storedEventId) {
+      try {
+        console.log(`Marking webhook event ${storedEventId} as processed`);
+        const marked = await markWebhookEventProcessed(storedEventId, processingResult);
+        if (!marked || !marked.success) {
+          console.warn(`Warning: Could not mark webhook event ${storedEventId} as processed:`, 
+                       marked?.warning || 'unknown error');
+          logToFile(`Warning: Could not mark webhook event ${storedEventId} as processed`);
+        } else {
+          console.log(`Webhook event ${storedEventId} marked as processed`);
+        }
+      } catch (markError) {
+        console.error(`Error marking webhook event ${storedEventId} as processed:`, markError);
+        logToFile(`Error marking webhook event as processed: ${markError.message}`);
+      }
+    }
+    
+    // Return success response to the webhook sender
+    return res.status(200).json({ 
+      success: true, 
+      message: 'Webhook received and processed',
+      processingResult: processingResult.success ? 'success' : 'error',
+      details: processingResult.success ? processingResult : { error: processingResult.error }
+    });
+  } catch (error) {
+    console.error('Unhandled error in webhook handler:', error);
+    logToFile(`Unhandled error in webhook handler: ${error.message}`);
+    
+    // Always try to store locally if we have a body
     if (req.body) {
       try {
         await storeEventLocally(req.body);
@@ -398,11 +510,11 @@ const handleEviaSignWebhook = async (req, res) => {
       }
     }
     
-    // Return 200 to the webhook sender to prevent retries
-    // But include the error in the response
-    res.status(500).json({ 
+    // Always return 200 to prevent retries, but include error details
+    return res.status(200).json({ 
       success: false, 
-      message: `Error: ${error.message}` 
+      message: `Error processed by server: ${error.message}`,
+      errorHandled: true
     });
   }
 };

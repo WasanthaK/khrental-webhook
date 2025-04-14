@@ -154,35 +154,63 @@ const testConnection = async () => {
  */
 async function insertWebhookEvent(eventData) {
   try {
-    // Reduce verbosity - only log minimal information
-    // Format the UUID if it's present to ensure it's valid
+    // Validate input
+    if (!eventData) {
+      console.error('[supabaseClient] Error: No event data provided');
+      return { success: false, error: 'No event data provided' };
+    }
+
+    // Log the incoming data
+    console.log('[supabaseClient] Inserting webhook event:', 
+                `EventId=${eventData.EventId}, RequestId=${eventData.RequestId}`);
+    
+    // Handle the RequestId appropriately
     let validRequestId = eventData.RequestId;
     
-    // Ensure the RequestId is in the correct UUID format
-    if (validRequestId && typeof validRequestId === 'string') {
-      // Validate that it's a valid UUID format
+    // Check for test mode RequestIds (non-UUID format)
+    const isTestId = typeof validRequestId === 'string' && 
+                     (validRequestId.includes('test') || 
+                      validRequestId.length < 32 || 
+                      !validRequestId.includes('-'));
+    
+    if (isTestId) {
+      console.log(`[supabaseClient] Test RequestId detected: ${validRequestId}`);
+      // For test IDs, create a proper UUID to avoid database issues
+      validRequestId = crypto.randomUUID();
+      console.log(`[supabaseClient] Generated UUID for test RequestId: ${validRequestId}`);
+    } else if (validRequestId && typeof validRequestId === 'string') {
+      // For non-test IDs, validate and standardize the UUID format
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (!uuidRegex.test(validRequestId)) {
         console.warn(`[supabaseClient] RequestId ${validRequestId} is not in standard UUID format`);
         // Try to fix common formatting issues
         validRequestId = validRequestId.trim().toLowerCase();
+        
+        // If it still doesn't match, generate a new UUID
+        if (!uuidRegex.test(validRequestId)) {
+          const originalId = validRequestId;
+          validRequestId = crypto.randomUUID();
+          console.log(`[supabaseClient] Generated UUID for invalid RequestId: ${originalId} → ${validRequestId}`);
+        }
       }
     }
 
-    // Prepare the record data
+    // Prepare the record data with careful type handling
     const record = {
       event_type: eventData.EventDescription || 'unknown',
       request_id: validRequestId,
-      user_name: eventData.UserName,
-      user_email: eventData.Email,
-      subject: eventData.Subject,
-      event_id: eventData.EventId,
-      event_time: eventData.EventTime,
+      user_name: eventData.UserName || null,
+      user_email: eventData.Email || null,
+      subject: eventData.Subject || null,
+      event_id: eventData.EventId !== undefined ? Number(eventData.EventId) : null,
+      event_time: eventData.EventTime || new Date().toISOString(),
       raw_data: eventData,
       createdat: new Date().toISOString(),
       updatedat: new Date().toISOString(),
       processed: false
     };
+
+    console.log(`[supabaseClient] Inserting record for event_id: ${record.event_id}, request_id: ${record.request_id}`);
 
     // Insert the record
     const { data, error } = await supabase
@@ -192,23 +220,59 @@ async function insertWebhookEvent(eventData) {
 
     if (error) {
       console.error('[supabaseClient] Error inserting webhook event:', error);
-      // Additional logging for specific types of errors
+      
+      // Detailed error logging by type
       if (error.code === '23502') {
         console.error('[supabaseClient] Not null violation. Check these fields:', error.details);
+        console.error('[supabaseClient] Record attempted:', JSON.stringify(record));
       } else if (error.code === '23505') {
         console.error('[supabaseClient] Unique violation. Duplicate event?', error.details);
       } else if (error.code === '22P02') {
         console.error('[supabaseClient] Invalid input syntax, likely a UUID issue:', error.details);
         console.error('[supabaseClient] RequestId was:', validRequestId);
+        console.error('[supabaseClient] Record attempted:', JSON.stringify(record));
+      } else {
+        console.error('[supabaseClient] Unknown error code:', error.code, error.message);
       }
       
-      throw error;
+      // Try a direct HTTP approach if the supabase client fails
+      try {
+        console.log('[supabaseClient] Attempting direct HTTP API insert as fallback');
+        
+        const response = await customFetch(
+          `${SUPABASE_URL}/rest/v1/webhook_events`,
+          {
+            method: 'POST',
+            headers: {
+              'apikey': SUPABASE_SERVICE_KEY,
+              'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=representation'
+            },
+            body: JSON.stringify(record)
+          }
+        );
+        
+        if (response.ok) {
+          const responseData = await response.json();
+          console.log('[supabaseClient] Direct HTTP insert successful');
+          return { success: true, data: responseData[0] };
+        } else {
+          const errorText = await response.text();
+          console.error(`[supabaseClient] Direct HTTP insert failed: ${response.status} - ${errorText}`);
+          throw new Error(`HTTP error ${response.status}: ${errorText}`);
+        }
+      } catch (httpError) {
+        console.error('[supabaseClient] Fallback HTTP insert failed:', httpError);
+        throw error; // Throw the original error
+      }
     }
 
+    console.log('[supabaseClient] Webhook event inserted successfully, ID:', data?.[0]?.id);
     return { success: true, data: data?.[0] };
   } catch (error) {
     console.error('[supabaseClient] Exception in insertWebhookEvent:', error);
-    return { success: false, error: error.message };
+    return { success: false, error: error.message, data: null };
   }
 }
 
