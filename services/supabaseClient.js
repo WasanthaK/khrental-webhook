@@ -198,19 +198,14 @@ async function insertWebhookEvent(eventData) {
     
     log(`Processing webhook: EventId=${eventData.EventId}, RequestId=${eventData.RequestId}`, 'info');
     
-    // Validate and normalize the UUID for the eviasignreference column
-    const { valid, value: validatedUuid } = validateAndNormalizeUUID(eventData.RequestId);
-    
-    if (!valid) {
-      log(`Converting invalid RequestId '${eventData.RequestId}' to UUID: ${validatedUuid}`, 'warn');
-    } else {
-      log(`Using valid UUID: ${validatedUuid}`, 'info');
-    }
+    // Use the RequestId directly without validation
+    const requestId = eventData.RequestId;
+    log(`Using RequestId: ${requestId}`, 'info');
     
     // Prepare record using all fields from the schema
     const record = {
       event_type: eventData.EventDescription || 'unknown',
-      eviasignreference: validatedUuid,
+      eviasignreference: requestId,
       user_name: eventData.UserName || null,
       user_email: eventData.Email || null,
       subject: eventData.Subject || null,
@@ -219,10 +214,11 @@ async function insertWebhookEvent(eventData) {
       raw_data: typeof eventData === 'object' ? JSON.stringify(eventData) : eventData,
       createdat: new Date().toISOString(),
       updatedat: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
       processed: false
     };
     
-    log(`Attempting to insert webhook event with UUID: ${validatedUuid}`, 'info');
+    log(`Attempting to insert webhook event with UUID: ${requestId}`, 'info');
     
     // First attempt with standard Supabase client
     try {
@@ -240,7 +236,7 @@ async function insertWebhookEvent(eventData) {
         // Continue to fallback if primary method fails
         if (error.code === '23505') {
           log('Event already exists in database', 'warn');
-          return { success: true, id: validatedUuid, warning: 'Event already exists' };
+          return { success: true, id: requestId, warning: 'Event already exists' };
         }
       }
     } catch (clientError) {
@@ -276,8 +272,8 @@ async function insertWebhookEvent(eventData) {
         // Return best-effort ID for continued processing
         return { 
           success: true, 
-          id: validatedUuid,
-          warning: 'Database insertion failed, using validated UUID for processing'
+          id: requestId,
+          warning: 'Database insertion failed, using provided RequestId for processing'
         };
       }
     } catch (httpError) {
@@ -286,8 +282,8 @@ async function insertWebhookEvent(eventData) {
       // Return best-effort ID for continued processing
       return { 
         success: true, 
-        id: validatedUuid,
-        warning: 'Exception during insertion, using validated UUID for processing'
+        id: requestId,
+        warning: 'Exception during insertion, using provided RequestId for processing'
       };
     }
   } catch (error) {
@@ -338,7 +334,8 @@ async function markWebhookEventProcessed(eventId, processingResult = {}) {
     const updateData = {
       processed: true,
       processedat: new Date().toISOString(),
-      updatedat: new Date().toISOString()
+      updatedat: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     };
     
     // Log the update operation
