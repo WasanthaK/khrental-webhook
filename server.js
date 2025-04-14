@@ -30,6 +30,26 @@ app.use(cors());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10mb' })); // Global JSON parsing middleware
 
+// Add a specific health check endpoint for Azure
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// Azure-specific middleware for proper handling of proxy settings
+if (process.env.WEBSITE_SITE_NAME) {
+  console.log('Running in Azure environment, applying Azure-specific settings');
+  
+  // Trust the Azure proxy for proper IP address handling
+  app.set('trust proxy', true);
+  
+  // Add Azure-specific error handling
+  app.use((err, req, res, next) => {
+    console.error('Azure middleware error:', err);
+    logToFile(`Azure middleware error: ${err.message}`);
+    next(err);
+  });
+}
+
 // Verify the webhook URL from .env
 const webhookUrl = process.env.VITE_EVIA_WEBHOOK_URL || process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`;
 
@@ -956,23 +976,22 @@ app.get('/dashboard', (req, res) => {
       // Add connection error card
       const errorCard = document.createElement('div');
       errorCard.className = 'card webhook-card event-5'; // Red border
-      errorCard.innerHTML = `
-        <div class="card-header">
-          <div>
-            <span class="badge bg-danger">Connection Error</span>
-          </div>
-          <span class="timestamp">\${new Date().toLocaleString()}</span>
-        </div>
-        <div class="card-body">
-          <p>There was an error connecting to the server. Check the following:</p>
-          <ul>
-            <li>Server is running</li>
-            <li>WebSocket connections are enabled on Azure</li>
-            <li>Check <a href="/azure-logs">Azure logs</a> for more details</li>
-          </ul>
-          <p>Error: \${error.message || 'Unknown error'}</p>
-        </div>
-      `;
+      errorCard.innerHTML = 
+        '<div class="card-header">' +
+        '  <div>' +
+        '    <span class="badge bg-danger">Connection Error</span>' +
+        '  </div>' +
+        '  <span class="timestamp">' + new Date().toLocaleString() + '</span>' +
+        '</div>' +
+        '<div class="card-body">' +
+        '  <p>There was an error connecting to the server. Check the following:</p>' +
+        '  <ul>' +
+        '    <li>Server is running</li>' +
+        '    <li>WebSocket connections are enabled on Azure</li>' +
+        '    <li>Check <a href="/azure-logs">Azure logs</a> for more details</li>' +
+        '  </ul>' +
+        '  <p>Error: ' + (error.message || 'Unknown error') + '</p>' +
+        '</div>';
       
       // Add to container at the top
       webhooksContainer.insertBefore(errorCard, webhooksContainer.firstChild);
@@ -1031,33 +1050,32 @@ app.get('/dashboard', (req, res) => {
       
       // Create uuid chip
       const requestIdChip = webhook.RequestId ? 
-        \`<span class="request-id-chip">\${webhook.RequestId}</span>\` : '';
+        '<span class="request-id-chip">' + webhook.RequestId + '</span>' : '';
       
-      card.innerHTML = \`
-        <div class="card-header">
-          <div>
-            <span class="badge \${badgeClass}">\${eventName}</span>
-            \${requestIdChip}
-          </div>
-          <span class="timestamp">\${formatDate(webhook.receivedAt)}</span>
-        </div>
-        <div class="card-body">
-          <div class="row">
-            <div class="col-md-6">
-              <p class="mb-1"><strong>User:</strong> \${webhook.UserName || 'N/A'}</p>
-              <p class="mb-1"><strong>Email:</strong> \${webhook.Email || 'N/A'}</p>
-              <p class="mb-0"><strong>Subject:</strong> \${webhook.Subject || 'N/A'}</p>
-            </div>
-            <div class="col-md-6">
-              <p class="mb-1"><strong>Event Time:</strong> \${formatDate(webhook.EventTime)}</p>
-              <p class="mb-0"><strong>Event ID:</strong> \${webhook.EventId || 'N/A'}</p>
-            </div>
-          </div>
-          <hr>
-          <h6 class="mb-2">Raw Data:</h6>
-          <pre>\${JSON.stringify(webhook, null, 2)}</pre>
-        </div>
-      \`;
+      card.innerHTML = 
+        '<div class="card-header">' +
+        '  <div>' +
+        '    <span class="badge ' + badgeClass + '">' + eventName + '</span>' +
+        '    ' + requestIdChip +
+        '  </div>' +
+        '  <span class="timestamp">' + formatDate(webhook.receivedAt) + '</span>' +
+        '</div>' +
+        '<div class="card-body">' +
+        '  <div class="row">' +
+        '    <div class="col-md-6">' +
+        '      <p class="mb-1"><strong>User:</strong> ' + (webhook.UserName || 'N/A') + '</p>' +
+        '      <p class="mb-1"><strong>Email:</strong> ' + (webhook.Email || 'N/A') + '</p>' +
+        '      <p class="mb-0"><strong>Subject:</strong> ' + (webhook.Subject || 'N/A') + '</p>' +
+        '    </div>' +
+        '    <div class="col-md-6">' +
+        '      <p class="mb-1"><strong>Event Time:</strong> ' + formatDate(webhook.EventTime) + '</p>' +
+        '      <p class="mb-0"><strong>Event ID:</strong> ' + (webhook.EventId || 'N/A') + '</p>' +
+        '    </div>' +
+        '  </div>' +
+        '<hr>' +
+        '<h6 class="mb-2">Raw Data:</h6>' +
+        '<pre>' + JSON.stringify(webhook, null, 2) + '</pre>' +
+        '</div>';
       
       // Add to container at the top
       webhooksContainer.insertBefore(card, webhooksContainer.firstChild);
@@ -1133,7 +1151,7 @@ app.get('/dashboard', (req, res) => {
         });
         
         if (!response.ok) {
-          throw new Error(\`HTTP error \${response.status}\`);
+          throw new Error('HTTP error ' + response.status);
         }
         
         // Show success
@@ -1165,7 +1183,16 @@ app.post('/webhook/eviasign', handleEviaSignWebhook);
 
 // Create HTTP server and Socket.IO instance
 const server = http.createServer(app);
-const io = new Server(server);
+const io = new Server(server, {
+  // Socket.IO configuration for Azure WebSockets
+  transports: ['websocket', 'polling'],  // Try WebSocket first, fallback to polling
+  pingTimeout: 60000,                    // Increase ping timeout for Azure
+  pingInterval: 25000,                   // Ping clients more frequently to keep connection
+  cors: {
+    origin: "*",                         // Allow connections from any origin
+    methods: ["GET", "POST"]
+  }
+});
 
 // Set up Socket.IO connection
 io.on('connection', (socket) => {
@@ -1189,7 +1216,7 @@ io.on('connection', (socket) => {
 webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
   const requestId = webhookData.RequestId || 'unknown';
   const eventId = webhookData.EventId || 'unknown';
-  const processingId = `${new Date().toISOString().replace(/[:.]/g, '')}-${requestId.substring(0, 8)}`;
+  const processingId = new Date().toISOString().replace(/[:.]/g, '') + '-' + requestId.substring(0, 8);
   
   console.log(`\n=== [${processingId}] DATABASE PROCESSOR STARTING FOR WEBHOOK ===`);
   console.log(`[${processingId}] TIMESTAMP: ${new Date().toISOString()}`);
@@ -1211,7 +1238,7 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
       
       console.log(`[${processingId}] Webhook processing completed in ${processingDuration}ms`);
       logToFile(`[${processingId}] Webhook processing completed in ${processingDuration}ms`);
-      console.log(`[${processingId}] Processing result:`, JSON.stringify(result, null, 2));
+      console.log(`[${processingId}] Processing result: `, JSON.stringify(result, null, 2));
       logToFile(`[${processingId}] Processing result: ${JSON.stringify(result)}`);
     
       // Mark as processed in Supabase only if we have an ID
@@ -1244,7 +1271,7 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
             console.log(`[${processingId}] Successfully marked event as processed via direct PATCH (took ${updateDuration}ms)`);
             logToFile(`[${processingId}] Successfully marked event as processed via direct PATCH (took ${updateDuration}ms)`);
             const updateData = await updateResponse.json();
-            console.log(`[${processingId}] Update response:`, JSON.stringify(updateData, null, 2));
+            console.log(`[${processingId}] Update response: `, JSON.stringify(updateData, null, 2));
           } else {
             const errorText = await updateResponse.text();
             console.error(`[${processingId}] Failed to mark processed via direct PATCH: ${updateResponse.status} - ${errorText}`);
@@ -1258,7 +1285,7 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
             logToFile(`[${processingId}] Successfully marked event as processed via fallback`);
           }
         } catch (markError) {
-          console.error(`[${processingId}] Error marking webhook as processed:`, markError);
+          console.error(`[${processingId}] Error marking webhook as processed: ${markError}`);
           logToFile(`[${processingId}] Error marking webhook as processed: ${markError.message}`);
           // Continue despite marking error
         }
@@ -1267,7 +1294,7 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
         logToFile(`[${processingId}] No stored event ID available, skipping marking as processed`);
       }
     } catch (processError) {
-      console.error(`[${processingId}] Error processing webhook event:`, processError);
+      console.error(`[${processingId}] Error processing webhook event: ${processError}`);
       logToFile(`[${processingId}] Error processing webhook event: ${processError.message}`);
       logToFile(`[${processingId}] Stack trace: ${processError.stack || 'No stack trace available'}`);
       
@@ -1303,7 +1330,7 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
             logToFile(`[${processingId}] Failed to mark as errored: ${errorText}`);
           }
         } catch (markError) {
-          console.error(`[${processingId}] Error marking webhook as errored:`, markError);
+          console.error(`[${processingId}] Error marking webhook as errored: ${markError}`);
           logToFile(`[${processingId}] Error marking webhook as errored: ${markError.message}`);
         }
       }
@@ -1314,9 +1341,9 @@ webhookProcessor.on('new-webhook', async (webhookData, storedEventId) => {
     
   } catch (error) {
     // Handle any unexpected errors in the processor
-    console.error(`[${processingId}] Critical error in webhook processor:`, error);
+    console.error(`[${processingId}] Critical error in webhook processor: ${error}`);
     logToFile(`[${processingId}] Critical error in webhook processor: ${error.message}`);
-    console.log(`[${processingId}] STACK TRACE:`, error.stack);
+    console.log(`[${processingId}] STACK TRACE: ${error.stack}`);
     logToFile(`[${processingId}] Stack trace: ${error.stack || 'No stack trace available'}`);
   }
 });
@@ -1344,35 +1371,191 @@ app.get('/azure-logs', (req, res) => {
       logs = 'Not running in Azure environment';
     }
     
-    res.send(`
-      <html>
-        <head>
-          <title>Azure Webhook Logs</title>
-          <style>
-            body { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 1000px; margin: 0 auto; padding: 20px; }
-            h1 { color: #2563eb; }
-            pre { background: #f3f4f6; padding: 12px; border-radius: 4px; overflow: auto; white-space: pre-wrap; }
-            a { color: #2563eb; }
-            .controls { margin-bottom: 15px; }
-          </style>
-        </head>
-        <body>
-          <h1>Azure Webhook Logs</h1>
-          <div class="controls">
-            <a href="/">Back to status page</a> | 
-            <a href="/dashboard">Back to dashboard</a> | 
-            <a href="/azure-logs" onclick="location.reload(); return false;">Refresh Logs</a>
-          </div>
-          <div>
-            <strong>Azure Site:</strong> ${process.env.WEBSITE_SITE_NAME || 'Not running in Azure'}
-          </div>
-          <pre>${logs}</pre>
-        </body>
-      </html>
-    `);
+    const html = '<!DOCTYPE html>' +
+      '<html>' +
+      '  <head>' +
+      '    <title>Azure Webhook Logs</title>' +
+      '    <style>' +
+      '      body { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 1000px; margin: 0 auto; padding: 20px; }' +
+      '      h1 { color: #2563eb; }' +
+      '      pre { background: #f3f4f6; padding: 12px; border-radius: 4px; overflow: auto; white-space: pre-wrap; }' +
+      '      a { color: #2563eb; }' +
+      '      .controls { margin-bottom: 15px; }' +
+      '    </style>' +
+      '  </head>' +
+      '  <body>' +
+      '    <h1>Azure Webhook Logs</h1>' +
+      '    <div class="controls">' +
+      '      <a href="/">Back to status page</a> | ' +
+      '      <a href="/dashboard">Back to dashboard</a> | ' +
+      '      <a href="/azure-logs" onclick="location.reload(); return false;">Refresh Logs</a>' +
+      '    </div>' +
+      '    <div>' +
+      '      <strong>Azure Site:</strong> ' + (process.env.WEBSITE_SITE_NAME || 'Not running in Azure') +
+      '    </div>' +
+      '    <pre>' + logs + '</pre>' +
+      '  </body>' +
+      '</html>';
+    
+    res.send(html);
   } catch (err) {
-    res.status(500).send(`Error reading Azure logs: ${err.message}`);
+    res.status(500).send('Error reading Azure logs: ' + err.message);
   }
+});
+
+// Add an admin troubleshooting page
+app.get('/admin', (req, res) => {
+  const memory = process.memoryUsage();
+  const formattedMemory = {};
+  
+  // Format memory values to MB for easier reading
+  for (let key in memory) {
+    formattedMemory[key] = Math.round(memory[key] / 1024 / 1024 * 100) / 100 + ' MB';
+  }
+  
+  // Get system info
+  const systemInfo = {
+    platform: process.platform,
+    arch: process.arch,
+    nodeVersion: process.version,
+    uptime: Math.floor(process.uptime() / 60) + ' minutes',
+    totalMemory: formattedMemory.rss,
+    heapTotal: formattedMemory.heapTotal,
+    heapUsed: formattedMemory.heapUsed,
+    external: formattedMemory.external,
+    arrayBuffers: formattedMemory.arrayBuffers
+  };
+  
+  // Check Azure environment
+  const isAzure = !!process.env.WEBSITE_SITE_NAME;
+  const azureInfo = isAzure ? {
+    siteName: process.env.WEBSITE_SITE_NAME,
+    nodeVersion: process.env.WEBSITE_NODE_DEFAULT_VERSION,
+    scmType: process.env.SCM_TYPE,
+    deploymentId: process.env.DEPLOYMENT_ID,
+    instanceId: process.env.WEBSITE_INSTANCE_ID
+  } : null;
+  
+  // Get info on connected socket clients
+  const socketInfo = {
+    connectedClients: Object.keys(io.sockets.sockets).length,
+    roomCount: Object.keys(io.sockets.adapter.rooms).length
+  };
+  
+  // Create the Azure environment section if running in Azure
+  const azureSection = isAzure ? 
+    '<div class="section">' +
+    '  <h2>Azure Environment</h2>' +
+    '  <div class="diagnostic"><strong>Site name:</strong> ' + azureInfo.siteName + '</div>' +
+    '  <div class="diagnostic"><strong>Node version:</strong> ' + azureInfo.nodeVersion + '</div>' +
+    '  <div class="diagnostic"><strong>Instance ID:</strong> ' + azureInfo.instanceId + '</div>' +
+    '  <div class="diagnostic"><strong>Deployment ID:</strong> ' + azureInfo.deploymentId + '</div>' +
+    '</div>' : '';
+  
+  // Create the restart button only if in Azure
+  const restartButton = isAzure ? 
+    '<a href="/admin/restart" class="btn btn-danger" onclick="return confirm(\'Are you sure you want to restart the server?\')">Restart Server</a>' : '';
+  
+  // Environment variables to display (with sensitive data masked)
+  const envVars = {
+    NODE_ENV: process.env.NODE_ENV,
+    PORT: process.env.PORT,
+    SUPABASE_URL: process.env.SUPABASE_URL ? '✓ Set' : '✗ Not set',
+    SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? '✓ Set' : '✗ Not set',
+    EVIA_SIGN_WEBHOOK_URL: process.env.EVIA_SIGN_WEBHOOK_URL
+  };
+  
+  const html = '<!DOCTYPE html>' +
+    '<html>' +
+    '  <head>' +
+    '    <title>Webhook Server Admin</title>' +
+    '    <style>' +
+    '      body { font-family: system-ui, sans-serif; line-height: 1.5; max-width: 1000px; margin: 0 auto; padding: 20px; }' +
+    '      h1, h2 { color: #2563eb; }' +
+    '      pre { background: #f3f4f6; padding: 12px; border-radius: 4px; overflow: auto; white-space: pre-wrap; }' +
+    '      a { color: #2563eb; }' +
+    '      .controls { margin-bottom: 15px; }' +
+    '      .warning { color: #ef4444; font-weight: bold; }' +
+    '      .section { margin-bottom: 20px; padding: 15px; border: 1px solid #e5e7eb; border-radius: 8px; }' +
+    '      .btn { display: inline-block; padding: 8px 16px; background: #3b82f6; color: white; ' +
+    '             border-radius: 4px; text-decoration: none; margin-right: 8px; }' +
+    '      .btn-warning { background: #f59e0b; }' +
+    '      .btn-danger { background: #ef4444; }' +
+    '      .actions { margin: 20px 0; }' +
+    '      .diagnostic { font-family: monospace; margin-bottom: 10px; }' +
+    '    </style>' +
+    '  </head>' +
+    '  <body>' +
+    '    <h1>Webhook Server Admin Panel</h1>' +
+    '    <div class="controls">' +
+    '      <a href="/">Home</a> | ' +
+    '      <a href="/dashboard">Dashboard</a> | ' +
+    '      <a href="/azure-logs">Azure Logs</a> |' +
+    '      <a href="/logs">Server Logs</a>' +
+    '    </div>' +
+    '    ' +
+    '    <div class="section">' +
+    '      <h2>Server Status</h2>' +
+    '      <div class="diagnostic"><strong>Timestamp:</strong> ' + new Date().toISOString() + '</div>' +
+    '      <div class="diagnostic"><strong>Webhooks processed:</strong> ' + eventCount + '</div>' +
+    '      <div class="diagnostic"><strong>Server uptime:</strong> ' + systemInfo.uptime + '</div>' +
+    '      <div class="diagnostic"><strong>Memory usage:</strong> ' + systemInfo.heapUsed + ' / ' + systemInfo.heapTotal + '</div>' +
+    '      <div class="diagnostic"><strong>WebSocket clients:</strong> ' + socketInfo.connectedClients + '</div>' +
+    '    </div>' +
+    '    ' +
+    azureSection +
+    '    ' +
+    '    <div class="section">' +
+    '      <h2>Actions</h2>' +
+    '      <p>These actions can help recover from errors without a full app restart.</p>' +
+    '      <div class="actions">' +
+    '        <a href="/admin/clear-memory" class="btn" onclick="return confirm(\'Are you sure you want to run garbage collection?\')">Clear Memory</a>' +
+    '        <a href="/admin/reset-connections" class="btn btn-warning" onclick="return confirm(\'Are you sure you want to reset all Socket.IO connections?\')">Reset WebSocket Connections</a>' +
+    '        ' + restartButton +
+    '      </div>' +
+    '    </div>' +
+    '    ' +
+    '    <div class="section">' +
+    '      <h2>System Information</h2>' +
+    '      <pre>' + JSON.stringify(systemInfo, null, 2) + '</pre>' +
+    '    </div>' +
+    '    ' +
+    '    <div class="section">' +
+    '      <h2>Environment Variables</h2>' +
+    '      <pre>' + JSON.stringify(envVars, null, 2) + '</pre>' +
+    '    </div>' +
+    '  </body>' +
+    '</html>';
+  
+  res.send(html);
+});
+
+// Admin routes for troubleshooting
+app.get('/admin/clear-memory', (req, res) => {
+  if (global.gc) {
+    global.gc();
+    res.send('<html><body><h1>Memory Cleared</h1><p>Garbage collection completed. <a href="/admin">Back to Admin</a></p></body></html>');
+  } else {
+    res.send('<html><body><h1>Error</h1><p>Garbage collection not available. Start Node with --expose-gc flag. <a href="/admin">Back to Admin</a></p></body></html>');
+  }
+});
+
+app.get('/admin/reset-connections', (req, res) => {
+  // Close all socket connections
+  io.sockets.disconnectSockets();
+  
+  res.send('<html><body><h1>WebSocket Connections Reset</h1><p>All Socket.IO connections have been closed. <a href="/admin">Back to Admin</a></p></body></html>');
+});
+
+app.get('/admin/restart', (req, res) => {
+  res.send('<html><body><h1>Server Restarting</h1><p>The server will restart in 5 seconds.</p><script>setTimeout(function() { window.location = "/admin"; }, 8000);</script></body></html>');
+  
+  // Schedule restart after response is sent
+  setTimeout(() => {
+    console.log('Server restart requested through admin panel');
+    logToFile('Server restart requested through admin panel');
+    process.exit(0); // Azure App Service will restart the app
+  }, 5000);
 });
 
 // Start the server
@@ -1380,4 +1563,30 @@ server.listen(PORT, () => {
   console.log(`Webhook server running on port ${PORT}`);
   console.log(`Webhook endpoint: ${webhookUrl}`);
   console.log(`Dashboard available at: http://localhost:${PORT}/dashboard`);
+  
+  // Set up self-ping for Azure to avoid idle timeouts
+  if (process.env.WEBSITE_SITE_NAME) {
+    console.log('Setting up self-ping mechanism to keep Azure app alive');
+    
+    // Get the Azure site URL
+    const azureURL = `https://${process.env.WEBSITE_SITE_NAME}.azurewebsites.net`;
+    
+    // Ping the health endpoint every 5 minutes to prevent idle shutdown
+    setInterval(async () => {
+      try {
+        const response = await fetch(`${azureURL}/health`);
+        if (response.ok) {
+          console.log(`Self-ping successful at ${new Date().toISOString()}`);
+        } else {
+          console.error(`Self-ping failed with status ${response.status}`);
+        }
+      } catch (error) {
+        console.error('Error during self-ping:', error.message);
+      }
+    }, 5 * 60 * 1000); // 5 minutes
+    
+    // Log startup to Azure logs
+    logToFile(`=== SERVER STARTED IN AZURE ENVIRONMENT (${process.env.WEBSITE_SITE_NAME}) ===`);
+    logToFile(`Webhook endpoint: ${webhookUrl}`);
+  }
 });
