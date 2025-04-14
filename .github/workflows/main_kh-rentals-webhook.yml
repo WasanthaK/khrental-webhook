@@ -32,7 +32,9 @@ jobs:
           echo "PORT=8080" >> .env
           echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> .env
           echo "SUPABASE_SERVICE_KEY=${{ secrets.SUPABASE_SERVICE_KEY }}" >> .env
-          echo "EVIA_SIGN_WEBHOOK_URL=${{ secrets.EVIA_SIGN_WEBHOOK_URL }}" >> .env
+          echo "EVIA_SIGN_WEBHOOK_URL=https://kh-rentals-webhook.azurewebsites.net/webhook/evia-sign" >> .env
+          echo "EVIA_SIGN_CLIENT_ID=${{ secrets.EVIA_SIGN_CLIENT_ID }}" >> .env
+          echo "EVIA_SIGN_CLIENT_SECRET=${{ secrets.EVIA_SIGN_CLIENT_SECRET }}" >> .env
 
       - name: Zip artifact for deployment
         run: zip -r release.zip ./*

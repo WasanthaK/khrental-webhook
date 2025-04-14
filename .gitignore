@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment and secrets
+.env
+.env.*
+
+# Runtime data and logs
+data/
+*.log
+webhook-logs.txt
+signature-logs.txt
+webhook-events.json
+verification-logs.txt
+state-flow-test.log
+
+# Test outputs
+test-results/
+coverage/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Azure deployment
+.deployment
+*.zip
+release.zip
+
+# Temporary files
+tmp/
+temp/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log* 

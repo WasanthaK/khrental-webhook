@@ -236,6 +236,9 @@ app.use((req, res, next) => {
 
 // Add a simple status page at the root
 app.get('/', (req, res) => {
+  const deployedUrl = process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`;
+  const isAzure = deployedUrl.includes('azurewebsites.net');
+  
   res.send(`
     <html>
       <head>
@@ -247,17 +250,22 @@ app.get('/', (req, res) => {
           .card { border: 1px solid #e5e7eb; border-radius: 8px; padding: 16px; margin-bottom: 16px; }
           pre { background: #f3f4f6; padding: 12px; border-radius: 4px; overflow: auto; }
           .webhook-url { word-break: break-all; font-family: monospace; }
+          .environment { display: inline-block; padding: 3px 7px; border-radius: 4px; font-size: 0.8rem; margin-left: 8px; }
+          .env-prod { background: #ef4444; color: white; }
+          .env-dev { background: #3b82f6; color: white; }
         </style>
       </head>
       <body>
-        <h1>Evia Sign Webhook Server</h1>
+        <h1>Evia Sign Webhook Server
+          <span class="environment ${isAzure ? 'env-prod' : 'env-dev'}">${isAzure ? 'Production' : 'Development'}</span>
+        </h1>
         <div class="card">
           <h2>Server Status: <span class="status">Running</span></h2>
           <p><strong>Server started at:</strong> ${new Date().toISOString()}</p>
           <p><strong>Port:</strong> ${PORT}</p>
           <p><strong>Events processed:</strong> ${eventCount}</p>
           <p><strong>Webhook endpoint:</strong><br/>
-            <code class="webhook-url">POST ${process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`}</code>
+            <code class="webhook-url">POST ${deployedUrl}</code>
           </p>
         </div>
         
@@ -265,7 +273,7 @@ app.get('/', (req, res) => {
           <h2>Webhook Testing</h2>
           <p>To test the webhook, send a POST request to the webhook endpoint with a JSON payload.</p>
           <pre>
-curl -X POST ${process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`} \\
+curl -X POST ${deployedUrl} \\
   -H "Content-Type: application/json" \\
   -d '{
   "RequestId": "test-request-id",
@@ -283,6 +291,7 @@ curl -X POST ${process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/we
           <ul>
             <li><a href="/status">View JSON status</a></li>
             <li><a href="/logs">View recent logs</a></li>
+            <li><a href="/dashboard">Live Webhook Dashboard</a></li>
           </ul>
         </div>
       </body>
@@ -292,12 +301,14 @@ curl -X POST ${process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/we
 
 // Add a JSON status endpoint
 app.get('/status', (req, res) => {
+  const deployedUrl = process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`;
   res.json({
     status: 'running',
-    webhookUrl: process.env.EVIA_SIGN_WEBHOOK_URL || `http://localhost:${PORT}/webhook/evia-sign`,
+    webhookUrl: deployedUrl,
     serverStarted: new Date().toISOString(),
     eventsProcessed: eventCount,
-    port: PORT
+    port: PORT,
+    environment: deployedUrl.includes('azurewebsites.net') ? 'production' : 'development'
   });
 });
 
