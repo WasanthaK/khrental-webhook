@@ -1,0 +1,40 @@
+Process Test Log - 2025-04-14T09:20:30.961Z
+
+Starting process test
+=== Looking for an unprocessed event ===
+Found unprocessed event with ID: d4770044-250c-4d61-b1d0-c49959eb7603
+{
+  "id": "d4770044-250c-4d61-b1d0-c49959eb7603",
+  "request_id": "22791182-ecc8-4cf3-8f02-1a49700bca4d",
+  "event_type": "SignRequestReceived",
+  "processed": false
+}
+
+=== Testing markWebhookEventProcessed ===
+Marking event d4770044-250c-4d61-b1d0-c49959eb7603 as processed...
+Result:
+{
+  "success": false,
+  "warning": "All update attempts failed"
+}
+
+=== Verifying Event Update ===
+Updated event:
+{
+  "id": "d4770044-250c-4d61-b1d0-c49959eb7603",
+  "event_type": "SignRequestReceived",
+  "request_id": "22791182-ecc8-4cf3-8f02-1a49700bca4d",
+  "user_name": "Test User",
+  "user_email": "test@example.com",
+  "subject": "Test Document",
+  "event_id": 1,
+  "event_time": "2025-04-14T09:16:07.663+00:00",
+  "raw_data": "{\"EventId\":1,\"EventDescription\":\"SignRequestReceived\",\"RequestId\":\"test-1744622167663\",\"Email\":\"test@example.com\",\"UserName\":\"Test User\",\"Subject\":\"Test Document\",\"EventTime\":\"2025-04-14T09:16:07.663Z\"}",
+  "createdat": "2025-04-14T09:16:07.664+00:00",
+  "updatedat": "2025-04-14T09:16:07.664+00:00",
+  "processed": false,
+  "processed_at": null
+}
+Event is now processed: false
+Test completed
+Results written to ./process-test-log.txt

@@ -1,0 +1,54 @@
+Webhook_events Columns Debug - 2025-04-14T09:18:19.643Z
+
+Starting column debug
+=== Examining webhook_events table structure ===
+
+Sample record column names:
+[
+  "id",
+  "event_type",
+  "request_id",
+  "user_name",
+  "user_email",
+  "subject",
+  "event_id",
+  "event_time",
+  "raw_data",
+  "createdat",
+  "updatedat",
+  "processed",
+  "processed_at"
+]
+
+Detailed column values:
+id: string = "019049b3-d97c-4ad8-875c-730d933003dc"
+event_type: string = "SignatoryCompleted"
+request_id: string = "0493e1ee-4cfe-431b-9d89-6d3a107d3af1"
+user_name: string = "Kumara"
+user_email: string = "weerakoonewk@gmail.com"
+subject: string = "Rental Agreement - Property"
+event_id: number = 2
+event_time: string = "2023-05-01T12:00:00+00:00"
+raw_data: string = "{\"RequestId\":\"0493e1ee-4cfe-431b-9d89-6d3a107d3af1\",\"UserName\":\"Kumara\",\"Email\":\"weerakoonewk@gmail.com\",\"Subject\":\"Rental Agreement - Property\",\"EventId\":2,\"EventDescription\":\"SignatoryCompleted\",\"EventTime\":\"2023-05-01T12:00:00Z\",\"receivedAt\":\"2025-04-14T08:22:22.865Z\"}"
+createdat: string = "2025-04-14T08:22:22.867+00:00"
+updatedat: string = "2025-04-14T08:22:22.867+00:00"
+processed: boolean = false
+processed_at: object = null
+
+Creating test update object with exact column names:
+Using timestamp column: updatedat
+{
+  "processed": true,
+  "updatedat": "2025-04-14T09:18:20.266Z"
+}
+
+Testing update with correct column names:
+Update error:
+{
+  "code": "42703",
+  "details": null,
+  "hint": null,
+  "message": "record \"new\" has no field \"updated_at\""
+}
+Debug completed
+Results written to ./columns-debug.txt

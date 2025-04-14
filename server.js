@@ -128,20 +128,28 @@ function logToFile(message) {
 
 // Function to broadcast webhook events to connected clients
 function broadcastWebhook(webhookData) {
-  // Add timestamp if not present
-  const webhook = { 
-    ...webhookData, 
-    receivedAt: webhookData.receivedAt || new Date().toISOString() 
-  };
-  
-  // Add to recent webhooks, maintaining max size
-  recentWebhooks.unshift(webhook);
-  if (recentWebhooks.length > MAX_STORED_WEBHOOKS) {
-    recentWebhooks.pop();
+  try {
+    // Add timestamp if not present
+    const webhook = { 
+      ...webhookData, 
+      receivedAt: webhookData.receivedAt || new Date().toISOString() 
+    };
+    
+    // Add to recent webhooks, maintaining max size
+    recentWebhooks.unshift(webhook);
+    if (recentWebhooks.length > MAX_STORED_WEBHOOKS) {
+      recentWebhooks.pop();
+    }
+    
+    // Broadcast to all connected clients
+    io.emit('new-webhook', webhook);
+    console.log(`Successfully broadcasted webhook to dashboard: EventId=${webhook.EventId}, RequestId=${webhook.RequestId}`);
+    logToFile(`Broadcasted webhook to dashboard: EventId=${webhook.EventId}, RequestId=${webhook.RequestId}`);
+  } catch (error) {
+    console.error(`Error in broadcastWebhook: ${error.message}`, error);
+    logToFile(`Error in broadcastWebhook function: ${error.message}`);
+    // Don't rethrow - we want to continue processing
   }
-  
-  // Broadcast to all connected clients
-  io.emit('new-webhook', webhook);
 }
 
 // Function to store webhook events in the local JSON database
@@ -397,6 +405,9 @@ app.get('/logs', (req, res) => {
 // Handle Evia Sign webhooks
 const handleEviaSignWebhook = async (req, res) => {
   try {
+    console.log('==== WEBHOOK RECEIVED - STARTING PROCESSING ====');
+    logToFile('==== WEBHOOK RECEIVED - STARTING PROCESSING ====');
+    
     const webhookData = req.body;
     
     // Add received timestamp
@@ -417,12 +428,17 @@ const handleEviaSignWebhook = async (req, res) => {
     }
     
     // Always store locally first for backup
+    console.log('About to store webhook locally');
     await storeEventLocally(webhookData);
+    console.log('Webhook stored locally successfully');
     
-    // Broadcast to dashboard
+    // Broadcast to dashboard - this is where things might be failing
+    console.log('About to broadcast webhook to dashboard');
+    logToFile('About to broadcast webhook to dashboard');
     try {
       broadcastWebhook(webhookData);
-      console.log('Broadcasted webhook to dashboard');
+      console.log('Successfully completed dashboard broadcast');
+      logToFile('Successfully completed dashboard broadcast');
     } catch (broadcastError) {
       console.error('Error broadcasting to dashboard:', broadcastError);
       logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
@@ -431,8 +447,11 @@ const handleEviaSignWebhook = async (req, res) => {
     
     // Increment event count for status page
     eventCount++;
+    console.log('Event count incremented');
     
     // Store in Supabase before processing (recording raw event first)
+    console.log('=== BEGINNING DATABASE STORAGE ===');
+    logToFile('=== BEGINNING DATABASE STORAGE ===');
     let storedEventId = null;
     try {
       console.log('Storing webhook event in Supabase');
@@ -458,14 +477,22 @@ const handleEviaSignWebhook = async (req, res) => {
     }
     
     // Process the webhook
+    console.log('=== BEGINNING EVENT PROCESSING ===');
+    logToFile('=== BEGINNING EVENT PROCESSING ===');
     let processingResult = { success: false, error: 'Not processed' };
     try {
-      console.log('Processing webhook event...');
+      console.log('Processing webhook event via processSignatureEvent...');
       processingResult = await processSignatureEvent(webhookData);
       
       if (processingResult.success) {
-        console.log('Successfully processed webhook:', processingResult);
-        logToFile(`Successfully processed webhook for agreement: ${processingResult.agreementId || 'unknown'}`);
+        // Check for partial success (recorded but agreement not processed)
+        if (processingResult.recordingSuccess && !processingResult.agreementProcessed) {
+          console.log('Webhook recorded successfully but agreement processing had issues:', processingResult.error);
+          logToFile(`Webhook recorded successfully but agreement processing had issues: ${processingResult.error}`);
+        } else {
+          console.log('Successfully processed webhook:', processingResult);
+          logToFile(`Successfully processed webhook for agreement: ${processingResult.agreementId || 'unknown'}`);
+        }
       } else {
         console.error('Error in webhook processing:', processingResult.error);
         logToFile(`Error in webhook processing: ${processingResult.error}`);
@@ -473,8 +500,16 @@ const handleEviaSignWebhook = async (req, res) => {
     } catch (processingError) {
       console.error('Exception processing webhook:', processingError);
       logToFile(`Exception processing webhook: ${processingError.message}`);
-      processingResult = { success: false, error: processingError.message };
+      processingResult = { 
+        success: true, 
+        recordingSuccess: true,
+        agreementProcessed: false,
+        error: processingError.message 
+      };
     }
+    
+    console.log('=== COMPLETING PROCESSING & UPDATING STATUS ===');
+    logToFile('=== COMPLETING PROCESSING & UPDATING STATUS ===');
     
     // Mark as processed if we have an ID
     if (storedEventId) {
@@ -495,15 +530,26 @@ const handleEviaSignWebhook = async (req, res) => {
     }
     
     // Ensure we log the full processing flow completion
-    console.log(`Webhook processing complete for RequestId=${webhookData.RequestId}`);
-    logToFile(`Webhook processing complete for RequestId=${webhookData.RequestId}`);
+    console.log(`==== WEBHOOK PROCESSING COMPLETE: RequestId=${webhookData.RequestId} ====`);
+    logToFile(`==== WEBHOOK PROCESSING COMPLETE: RequestId=${webhookData.RequestId} ====`);
+    
+    // Determine the response message based on processing result
+    const responseMessage = processingResult.recordingSuccess ? 
+      (processingResult.agreementProcessed ? 
+        'Webhook received and fully processed' : 
+        'Webhook received and recorded, but agreement processing had issues') : 
+      'Webhook received and processed';
     
     // Return success response to the webhook sender
     return res.status(200).json({ 
       success: true, 
-      message: 'Webhook received and processed',
-      processingResult: processingResult.success ? 'success' : 'error',
-      details: processingResult.success ? processingResult : { error: processingResult.error }
+      message: responseMessage,
+      processingResult: processingResult.success ? 
+        (processingResult.agreementProcessed ? 'success' : 'partial_success') : 
+        'error',
+      details: processingResult.success ? 
+        (processingResult.error ? { warning: processingResult.error } : processingResult) : 
+        { error: processingResult.error }
     });
   } catch (error) {
     console.error('Unhandled error in webhook handler:', error);

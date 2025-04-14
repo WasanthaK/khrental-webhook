@@ -38,3 +38,32 @@
 [2025-04-14T07:42:09.237Z] No matches with exact fields, trying case-insensitive search
 [2025-04-14T07:42:09.419Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
 [2025-04-14T07:42:09.419Z] Agreement not found: No matching agreement found
+[2025-04-14T08:06:36.799Z] === SIGNATURE WEBHOOK PROCESSING STARTED ===
+[2025-04-14T08:06:36.799Z] Processing event 2 (SignatoryCompleted) for request 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:06:36.800Z] Looking for agreement with RequestId: 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:06:36.800Z] Looking for agreement with RequestId: 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:06:36.924Z] No exact match found, trying signature_request_id
+[2025-04-14T08:06:37.032Z] No matches with exact fields, trying case-insensitive search
+[2025-04-14T08:06:37.148Z] Error in case-insensitive search: operator does not exist: uuid ~~* unknown
+[2025-04-14T08:06:37.148Z] Agreement not found: No matching agreement found
+[2025-04-14T08:22:23.190Z] === SIGNATURE WEBHOOK PROCESSING STARTED ===
+[2025-04-14T08:22:23.190Z] Processing event 2 (SignatoryCompleted) for request 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:22:23.191Z] Looking for agreement with RequestId: 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:22:23.191Z] Looking for agreement with RequestId: 0493e1ee-4cfe-431b-9d89-6d3a107d3af1
+[2025-04-14T08:22:23.560Z] No UUID match found, trying signature_request_id
+[2025-04-14T08:22:23.758Z] Attempting direct SQL query for exact UUID text comparison
+[2025-04-14T08:22:23.987Z] RPC query failed: {"code":"PGRST202","details":"Searched for the function public.find_agreement_by_request_id with parameter request_id or with a single unnamed json/jsonb parameter, but no matches were found in the schema cache.","hint":"Perhaps you meant to call the function public.update_agreement_status","message":"Could not find the function public.find_agreement_by_request_id(request_id) in the schema cache"}
+[2025-04-14T08:22:23.987Z] No matching agreement found after trying all methods
+[2025-04-14T08:22:23.987Z] Agreement not found: No matching agreement found. Webhook event still recorded.
+[2025-04-14T08:46:03.781Z] === SIGNATURE WEBHOOK PROCESSING STARTED ===
+[2025-04-14T08:46:03.782Z] Processing event 1 (SignRequestReceived) for request c01c0bd4-f35d-4df9-a9db-f25f16d0ee6d
+[2025-04-14T08:46:03.783Z] Looking for agreement with RequestId: c01c0bd4-f35d-4df9-a9db-f25f16d0ee6d
+[2025-04-14T08:46:03.783Z] Looking for agreement with RequestId: c01c0bd4-f35d-4df9-a9db-f25f16d0ee6d
+[2025-04-14T08:46:03.907Z] Found agreement with casting query: 56ef5153-de2e-40a2-b59f-62748b4b7a16
+[2025-04-14T08:46:03.908Z] Found agreement ID: 56ef5153-de2e-40a2-b59f-62748b4b7a16, current status: pending_signature
+[2025-04-14T08:46:03.908Z] Handling event type 1
+[2025-04-14T08:46:03.908Z] Processing SignRequestReceived event
+[2025-04-14T08:46:03.908Z] Updating agreement 56ef5153-de2e-40a2-b59f-62748b4b7a16 with new data
+[2025-04-14T08:46:03.908Z] Update payload: {"updatedat":"2025-04-14T08:46:03.908Z","status":"pending_activation","signature_status":"send_for_signature","signature_sent_at":"2025-04-14T08:46:03.908Z"}...
+[2025-04-14T08:46:04.025Z] Agreement 56ef5153-de2e-40a2-b59f-62748b4b7a16 updated successfully
+[2025-04-14T08:46:04.026Z] === SIGNATURE WEBHOOK PROCESSING COMPLETED SUCCESSFULLY ===
