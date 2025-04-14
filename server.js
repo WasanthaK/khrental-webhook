@@ -12,6 +12,7 @@ import { testConnection, insertWebhookEvent, markWebhookEventProcessed, logWebho
 import supabase from './services/supabaseClient.js';
 import http from 'http';
 import { Server } from 'socket.io';
+import { EventEmitter } from 'events';
 
 // Load environment variables
 dotenv.config();
@@ -126,7 +127,12 @@ function logToFile(message) {
   }
 }
 
-// Function to broadcast webhook events to connected clients
+// Create an event emitter for database processing
+const webhookProcessor = new EventEmitter();
+// Set higher max listeners limit to avoid warnings
+webhookProcessor.setMaxListeners(20);
+
+// Function to broadcast webhook events to connected clients (dashboard only)
 function broadcastWebhook(webhookData) {
   try {
     // Add timestamp if not present
@@ -402,19 +408,67 @@ app.get('/logs', (req, res) => {
   }
 });
 
+// Function to process webhook events with detailed business logic
+async function processWebhookEvent(webhookData) {
+  try {
+    console.log('Processing webhook event with business logic');
+    logToFile('Processing webhook event with business logic');
+    
+    // Validate the webhook data again
+    if (!webhookData || !webhookData.EventId) {
+      console.error('Invalid webhook data for processing: missing required fields');
+      logToFile('Error: Invalid webhook data for processing - missing required fields');
+      return {
+        success: false,
+        error: 'Invalid webhook data for processing'
+      };
+    }
+    
+    // Delegate to the signature webhook service for actual business logic
+    console.log(`Delegating to processSignatureEvent for webhook: EventId=${webhookData.EventId}`);
+    logToFile(`Delegating to processSignatureEvent for webhook: EventId=${webhookData.EventId}`);
+    
+    const result = await processSignatureEvent(webhookData);
+    
+    if (result.success) {
+      console.log('Signature event processed successfully:', JSON.stringify(result, null, 2));
+      logToFile(`Signature event processed successfully: ${JSON.stringify(result)}`);
+    } else {
+      console.error('Error processing signature event:', JSON.stringify(result, null, 2));
+      logToFile(`Error processing signature event: ${JSON.stringify(result)}`);
+    }
+    
+    return result;
+  } catch (error) {
+    console.error('Exception in processWebhookEvent:', error);
+    logToFile(`Exception in processWebhookEvent: ${error.message}`);
+    console.log('STACK TRACE:', error.stack);
+    
+    return {
+      success: false,
+      error: `Exception in webhook processing: ${error.message}`
+    };
+  }
+}
+
 // Handle Evia Sign webhooks
 const handleEviaSignWebhook = async (req, res) => {
   try {
-    console.log('==== WEBHOOK RECEIVED - STARTING PROCESSING ====');
+    console.log('\n\n==== WEBHOOK RECEIVED - STARTING PROCESSING ====');
+    console.log('TIMESTAMP:', new Date().toISOString());
     logToFile('==== WEBHOOK RECEIVED - STARTING PROCESSING ====');
     
     const webhookData = req.body;
     
+    // Log the full webhook data for debugging
+    console.log('FULL WEBHOOK DATA:');
+    console.log(JSON.stringify(webhookData, null, 2));
+    
     // Add received timestamp
     webhookData.receivedAt = new Date().toISOString();
     
-    // Log webhook
-    console.log(`Processing webhook: RequestId=${webhookData.RequestId}, EventId=${webhookData.EventId}`);
+    // Log webhook details
+    console.log(`Processing webhook: RequestId=${webhookData.RequestId}, EventId=${webhookData.EventId}, Type=${webhookData.EventDescription || 'unknown'}`);
     logToFile(`Received webhook: RequestId=${webhookData.RequestId}, EventId=${webhookData.EventId}, UserName=${webhookData.UserName || 'N/A'}`);
     
     // Validate webhook data
@@ -432,13 +486,13 @@ const handleEviaSignWebhook = async (req, res) => {
     await storeEventLocally(webhookData);
     console.log('Webhook stored locally successfully');
     
-    // Broadcast to dashboard - this is where things might be failing
-    console.log('About to broadcast webhook to dashboard');
-    logToFile('About to broadcast webhook to dashboard');
+    // Broadcast to dashboard (UI updates only)
+    console.log('About to broadcast webhook to dashboard UI');
+    logToFile('About to broadcast webhook to dashboard UI');
     try {
       broadcastWebhook(webhookData);
-      console.log('Successfully completed dashboard broadcast');
-      logToFile('Successfully completed dashboard broadcast');
+      console.log('Successfully completed dashboard UI broadcast');
+      logToFile('Successfully completed dashboard UI broadcast');
     } catch (broadcastError) {
       console.error('Error broadcasting to dashboard:', broadcastError);
       logToFile(`Error broadcasting to dashboard: ${broadcastError.message}`);
@@ -449,126 +503,28 @@ const handleEviaSignWebhook = async (req, res) => {
     eventCount++;
     console.log('Event count incremented');
     
-    // Store in Supabase before processing (recording raw event first)
-    console.log('=== BEGINNING DATABASE STORAGE ===');
-    logToFile('=== BEGINNING DATABASE STORAGE ===');
-    let storedEventId = null;
-    try {
-      console.log('Storing webhook event in Supabase');
-      const storedResult = await insertWebhookEvent(webhookData);
-      
-      if (storedResult && storedResult.data && storedResult.data.id) {
-        storedEventId = storedResult.data.id;
-        console.log(`Webhook event stored in Supabase with ID: ${storedEventId}`);
-        logToFile(`Webhook event stored in Supabase with ID: ${storedEventId}`);
-      } else if (storedResult && !storedResult.success) {
-        console.error('Storing webhook failed:', storedResult.error);
-        logToFile(`Error storing webhook: ${storedResult.error}`);
-        // Continue processing despite storage failure
-      } else {
-        console.error('No ID returned from webhook storage');
-        logToFile('Warning: No ID returned from webhook storage');
-        // Continue processing despite missing ID
-      }
-    } catch (dbError) {
-      console.error('Error storing webhook event in database:', dbError);
-      logToFile(`Error storing webhook event in database: ${dbError.message}`);
-      // Continue with processing even if storage fails
-    }
+    // Emit to the separate database processor (asynchronous)
+    console.log('Emitting webhook to database processor');
+    logToFile('Emitting webhook to database processor');
+    webhookProcessor.emit('new-webhook', webhookData);
     
-    // Process the webhook
-    console.log('=== BEGINNING EVENT PROCESSING ===');
-    logToFile('=== BEGINNING EVENT PROCESSING ===');
-    let processingResult = { success: false, error: 'Not processed' };
-    try {
-      console.log('Processing webhook event via processSignatureEvent...');
-      processingResult = await processSignatureEvent(webhookData);
-      
-      if (processingResult.success) {
-        // Check for partial success (recorded but agreement not processed)
-        if (processingResult.recordingSuccess && !processingResult.agreementProcessed) {
-          console.log('Webhook recorded successfully but agreement processing had issues:', processingResult.error);
-          logToFile(`Webhook recorded successfully but agreement processing had issues: ${processingResult.error}`);
-        } else {
-          console.log('Successfully processed webhook:', processingResult);
-          logToFile(`Successfully processed webhook for agreement: ${processingResult.agreementId || 'unknown'}`);
-        }
-      } else {
-        console.error('Error in webhook processing:', processingResult.error);
-        logToFile(`Error in webhook processing: ${processingResult.error}`);
-      }
-    } catch (processingError) {
-      console.error('Exception processing webhook:', processingError);
-      logToFile(`Exception processing webhook: ${processingError.message}`);
-      processingResult = { 
-        success: true, 
-        recordingSuccess: true,
-        agreementProcessed: false,
-        error: processingError.message 
-      };
-    }
-    
-    console.log('=== COMPLETING PROCESSING & UPDATING STATUS ===');
-    logToFile('=== COMPLETING PROCESSING & UPDATING STATUS ===');
-    
-    // Mark as processed if we have an ID
-    if (storedEventId) {
-      try {
-        console.log(`Marking webhook event ${storedEventId} as processed`);
-        const marked = await markWebhookEventProcessed(storedEventId, processingResult);
-        if (!marked || !marked.success) {
-          console.warn(`Warning: Could not mark webhook event ${storedEventId} as processed:`, 
-                       marked?.warning || 'unknown error');
-          logToFile(`Warning: Could not mark webhook event ${storedEventId} as processed`);
-        } else {
-          console.log(`Webhook event ${storedEventId} marked as processed`);
-        }
-      } catch (markError) {
-        console.error(`Error marking webhook event ${storedEventId} as processed:`, markError);
-        logToFile(`Error marking webhook event as processed: ${markError.message}`);
-      }
-    }
-    
-    // Ensure we log the full processing flow completion
-    console.log(`==== WEBHOOK PROCESSING COMPLETE: RequestId=${webhookData.RequestId} ====`);
-    logToFile(`==== WEBHOOK PROCESSING COMPLETE: RequestId=${webhookData.RequestId} ====`);
-    
-    // Determine the response message based on processing result
-    const responseMessage = processingResult.recordingSuccess ? 
-      (processingResult.agreementProcessed ? 
-        'Webhook received and fully processed' : 
-        'Webhook received and recorded, but agreement processing had issues') : 
-      'Webhook received and processed';
-    
-    // Return success response to the webhook sender
+    // Always return success immediately to the webhook caller
+    console.log('Returning immediate success response to webhook caller');
+    logToFile('Returning immediate success response to webhook caller');
     return res.status(200).json({ 
       success: true, 
-      message: responseMessage,
-      processingResult: processingResult.success ? 
-        (processingResult.agreementProcessed ? 'success' : 'partial_success') : 
-        'error',
-      details: processingResult.success ? 
-        (processingResult.error ? { warning: processingResult.error } : processingResult) : 
-        { error: processingResult.error }
+      message: 'Webhook received and processing asynchronously.' 
     });
   } catch (error) {
-    console.error('Unhandled error in webhook handler:', error);
-    logToFile(`Unhandled error in webhook handler: ${error.message}`);
+    // Handle any unexpected errors at the top level
+    console.error('Critical error in webhook handler:', error);
+    logToFile(`Critical error in webhook handler: ${error.message}`);
+    console.log('STACK TRACE:', error.stack);
     
-    // Always try to store locally if we have a body
-    if (req.body) {
-      try {
-        await storeEventLocally(req.body);
-      } catch (storeError) {
-        console.error('Could not store event locally:', storeError);
-      }
-    }
-    
-    // Always return 200 to prevent retries, but include error details
+    // Always return a 200 response for webhooks to avoid retries
     return res.status(200).json({ 
       success: false, 
-      message: `Error processed by server: ${error.message}`,
-      errorHandled: true
+      error: 'Error processing webhook. See server logs for details.' 
     });
   }
 };
@@ -940,6 +896,256 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log('Dashboard client disconnected');
   });
+});
+
+// Set up the database processor listener
+webhookProcessor.on('new-webhook', async (webhookData) => {
+  const requestId = webhookData.RequestId || 'unknown';
+  const eventId = webhookData.EventId || 'unknown';
+  const processingId = `${new Date().toISOString().replace(/[:.]/g, '')}-${requestId.substring(0, 8)}`;
+  
+  console.log(`\n=== [${processingId}] DATABASE PROCESSOR STARTING FOR WEBHOOK ===`);
+  console.log(`[${processingId}] TIMESTAMP: ${new Date().toISOString()}`);
+  console.log(`[${processingId}] RequestId: ${requestId}, EventId: ${eventId}, Type: ${webhookData.EventDescription || 'unknown'}`);
+  logToFile(`=== [${processingId}] DATABASE PROCESSOR STARTING FOR WEBHOOK ===`);
+  logToFile(`[${processingId}] RequestId: ${requestId}, EventId: ${eventId}, Type: ${webhookData.EventDescription || 'unknown'}`);
+  
+  let storedEventId = null;
+  
+  try {
+    // Store in Supabase before processing
+    console.log(`\n=== [${processingId}] BEGINNING DATABASE STORAGE ===`);
+    logToFile(`=== [${processingId}] BEGINNING DATABASE STORAGE ===`);
+    
+    try {
+      console.log(`[${processingId}] Storing webhook event in Supabase`);
+      console.log(`[${processingId}] ENVIRONMENT CHECK:`);
+      console.log(`[${processingId}] - SUPABASE_URL set: ${!!process.env.SUPABASE_URL}`);
+      console.log(`[${processingId}] - SUPABASE_SERVICE_KEY set: ${!!process.env.SUPABASE_SERVICE_KEY}`);
+      
+      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+        throw new Error('Missing Supabase credentials in environment');
+      }
+      
+      // Create a properly formatted record for debugging
+      const testRecord = {
+        event_type: webhookData.EventDescription || 'unknown',
+        eviasignreference: webhookData.RequestId,
+        user_name: webhookData.UserName || null,
+        user_email: webhookData.Email || null,
+        subject: webhookData.Subject || null,
+        event_id: webhookData.EventId !== undefined ? Number(webhookData.EventId) : null,
+        event_time: webhookData.EventTime || new Date().toISOString(),
+        raw_data: JSON.stringify(webhookData),
+        createdat: new Date().toISOString(),
+        updatedat: new Date().toISOString(),
+        processed: false
+      };
+      
+      console.log(`[${processingId}] PREPARED RECORD:`);
+      console.log(JSON.stringify(testRecord, null, 2));
+      
+      // Try direct insert for debugging
+      console.log(`[${processingId}] Trying direct HTTP insert...`);
+      logToFile(`[${processingId}] Attempting direct HTTP insert to webhook_events table`);
+      
+      // NOTE - This is a debug implementation to bypass supabaseClient.js
+      try {
+        const insertStart = Date.now();
+        const directResponse = await fetch(
+          `${process.env.SUPABASE_URL}/rest/v1/webhook_events`,
+          {
+            method: 'POST',
+            headers: {
+              'apikey': process.env.SUPABASE_SERVICE_KEY,
+              'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=representation'
+            },
+            body: JSON.stringify(testRecord)
+          }
+        );
+        const insertDuration = Date.now() - insertStart;
+        
+        console.log(`[${processingId}] Direct insert response status: ${directResponse.status} (took ${insertDuration}ms)`);
+        logToFile(`[${processingId}] Direct insert response status: ${directResponse.status} (took ${insertDuration}ms)`);
+        
+        if (directResponse.ok) {
+          const data = await directResponse.json();
+          console.log(`[${processingId}] Direct insert successful. Response:`);
+          console.log(JSON.stringify(data, null, 2));
+          storedEventId = data[0]?.id;
+          console.log(`[${processingId}] Webhook stored with ID: ${storedEventId}`);
+          logToFile(`[${processingId}] Webhook stored with ID: ${storedEventId}`);
+        } else {
+          const errorText = await directResponse.text();
+          console.error(`[${processingId}] Direct insert failed: ${errorText}`);
+          logToFile(`[${processingId}] Direct insert failed: ${errorText}`);
+          
+          // Fall back to normal method
+          console.log(`[${processingId}] Falling back to normal insertWebhookEvent method...`);
+          logToFile(`[${processingId}] Falling back to normal insertWebhookEvent method`);
+          const storedResult = await insertWebhookEvent(webhookData);
+          
+          if (storedResult && storedResult.data && storedResult.data.id) {
+            storedEventId = storedResult.data.id;
+            console.log(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
+            logToFile(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
+          } else if (storedResult && !storedResult.success) {
+            console.error(`[${processingId}] Storing webhook failed:`, storedResult.error);
+            logToFile(`[${processingId}] Error storing webhook: ${storedResult.error}`);
+            // Continue processing despite storage failure
+          } else {
+            console.error(`[${processingId}] No ID returned from webhook storage`);
+            logToFile(`[${processingId}] Warning: No ID returned from webhook storage`);
+            // Continue processing despite missing ID
+          }
+        }
+      } catch (directError) {
+        console.error(`[${processingId}] Error with direct insert attempt:`, directError);
+        logToFile(`[${processingId}] Error with direct insert attempt: ${directError.message}`);
+        
+        // Fall back to normal method
+        console.log(`[${processingId}] Falling back to normal insertWebhookEvent method after direct error...`);
+        logToFile(`[${processingId}] Falling back to normal insertWebhookEvent method after direct error`);
+        const storedResult = await insertWebhookEvent(webhookData);
+        
+        if (storedResult && storedResult.data && storedResult.data.id) {
+          storedEventId = storedResult.data.id;
+          console.log(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
+          logToFile(`[${processingId}] Webhook event stored via fallback with ID: ${storedEventId}`);
+        } else {
+          console.error(`[${processingId}] Fallback storage also failed`);
+          logToFile(`[${processingId}] Fallback storage also failed`);
+        }
+      }
+    } catch (dbError) {
+      console.error(`[${processingId}] Exception storing webhook event in database:`, dbError);
+      logToFile(`[${processingId}] Exception storing webhook event in database: ${dbError.message}`);
+      // Continue with processing even if storage fails
+    }
+    
+    // Process the webhook (detailed business logic)
+    console.log(`\n=== [${processingId}] BEGINNING EVENT PROCESSING ===`);
+    logToFile(`=== [${processingId}] BEGINNING EVENT PROCESSING ===`);
+    try {
+      // Event-specific processing
+      console.log(`[${processingId}] Calling processWebhookEvent for business logic processing`);
+      logToFile(`[${processingId}] Calling processWebhookEvent for business logic processing`);
+      const processingStart = Date.now();
+      const result = await processWebhookEvent(webhookData);
+      const processingDuration = Date.now() - processingStart;
+      
+      console.log(`[${processingId}] Webhook processing completed in ${processingDuration}ms`);
+      logToFile(`[${processingId}] Webhook processing completed in ${processingDuration}ms`);
+      console.log(`[${processingId}] Processing result:`, JSON.stringify(result, null, 2));
+      logToFile(`[${processingId}] Processing result: ${JSON.stringify(result)}`);
+    
+      // Mark as processed in Supabase only if we have an ID
+      if (storedEventId) {
+        console.log(`[${processingId}] Marking event ${storedEventId} as processed in database`);
+        logToFile(`[${processingId}] Marking event ${storedEventId} as processed in database`);
+        try {
+          // Direct HTTP PATCH for debugging
+          console.log(`[${processingId}] Using direct HTTP PATCH to mark processed...`);
+          const updateStart = Date.now();
+          const updateResponse = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/webhook_events?id=eq.${storedEventId}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'apikey': process.env.SUPABASE_SERVICE_KEY,
+                'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=representation'
+              },
+              body: JSON.stringify({
+                processed: true,
+                updatedat: new Date().toISOString()
+              })
+            }
+          );
+          const updateDuration = Date.now() - updateStart;
+          
+          if (updateResponse.ok) {
+            console.log(`[${processingId}] Successfully marked event as processed via direct PATCH (took ${updateDuration}ms)`);
+            logToFile(`[${processingId}] Successfully marked event as processed via direct PATCH (took ${updateDuration}ms)`);
+            const updateData = await updateResponse.json();
+            console.log(`[${processingId}] Update response:`, JSON.stringify(updateData, null, 2));
+          } else {
+            const errorText = await updateResponse.text();
+            console.error(`[${processingId}] Failed to mark processed via direct PATCH: ${updateResponse.status} - ${errorText}`);
+            logToFile(`[${processingId}] Failed to mark processed via direct PATCH: ${updateResponse.status} - ${errorText}`);
+            
+            // Fall back to supabaseClient method
+            console.log(`[${processingId}] Falling back to markWebhookEventProcessed...`);
+            logToFile(`[${processingId}] Falling back to markWebhookEventProcessed`);
+            await markWebhookEventProcessed(storedEventId);
+            console.log(`[${processingId}] Successfully marked event as processed via fallback`);
+            logToFile(`[${processingId}] Successfully marked event as processed via fallback`);
+          }
+        } catch (markError) {
+          console.error(`[${processingId}] Error marking webhook as processed:`, markError);
+          logToFile(`[${processingId}] Error marking webhook as processed: ${markError.message}`);
+          // Continue despite marking error
+        }
+      } else {
+        console.log(`[${processingId}] No stored event ID available, skipping marking as processed`);
+        logToFile(`[${processingId}] No stored event ID available, skipping marking as processed`);
+      }
+    } catch (processError) {
+      console.error(`[${processingId}] Error processing webhook event:`, processError);
+      logToFile(`[${processingId}] Error processing webhook event: ${processError.message}`);
+      logToFile(`[${processingId}] Stack trace: ${processError.stack || 'No stack trace available'}`);
+      
+      // If we have a storedEventId, mark it as errored
+      if (storedEventId) {
+        try {
+          console.log(`[${processingId}] Marking event ${storedEventId} as errored`);
+          logToFile(`[${processingId}] Marking event ${storedEventId} as errored`);
+          // Simple direct update to avoid schema issues
+          const errorResponse = await fetch(
+            `${process.env.SUPABASE_URL}/rest/v1/webhook_events?id=eq.${storedEventId}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'apikey': process.env.SUPABASE_SERVICE_KEY,
+                'Authorization': `Bearer ${process.env.SUPABASE_SERVICE_KEY}`,
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                processed: true,
+                updatedat: new Date().toISOString(),
+                error_message: processError.message.substring(0, 255) // Truncate if needed
+              })
+            }
+          );
+          
+          if (errorResponse.ok) {
+            console.log(`[${processingId}] Successfully marked event as errored`);
+            logToFile(`[${processingId}] Successfully marked event as errored`);
+          } else {
+            const errorText = await errorResponse.text();
+            console.error(`[${processingId}] Failed to mark as errored: ${errorText}`);
+            logToFile(`[${processingId}] Failed to mark as errored: ${errorText}`);
+          }
+        } catch (markError) {
+          console.error(`[${processingId}] Error marking webhook as errored:`, markError);
+          logToFile(`[${processingId}] Error marking webhook as errored: ${markError.message}`);
+        }
+      }
+    }
+    
+    console.log(`\n==== [${processingId}] WEBHOOK PROCESSING COMPLETE ====`);
+    logToFile(`==== [${processingId}] WEBHOOK PROCESSING COMPLETE ====`);
+    
+  } catch (error) {
+    // Handle any unexpected errors in the processor
+    console.error(`[${processingId}] Critical error in webhook processor:`, error);
+    logToFile(`[${processingId}] Critical error in webhook processor: ${error.message}`);
+    console.log(`[${processingId}] STACK TRACE:`, error.stack);
+    logToFile(`[${processingId}] Stack trace: ${error.stack || 'No stack trace available'}`);
+  }
 });
 
 // Start the server
